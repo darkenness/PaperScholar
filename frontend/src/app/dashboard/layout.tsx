@@ -35,13 +35,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <Sidebar isOpen={sidebarOpen} onToggle={() => setSidebarOpen(!sidebarOpen)} />
       <main className="flex-1 overflow-y-auto min-w-0">
         {/* Mobile header with hamburger */}
-        <div className="lg:hidden sticky top-0 z-30 h-14 flex items-center px-4 tech-panel border-b border-dark-600">
-          <button onClick={() => setSidebarOpen(true)} className="p-2 -ml-2 text-gray-400 hover:text-white">
+        <div className="lg:hidden sticky top-0 z-30 h-14 flex items-center px-4 tech-panel border-b border-[var(--border-main)]">
+          <button onClick={() => setSidebarOpen(true)} className="p-2 -ml-2 text-[var(--text-muted)] hover:text-[var(--text-primary)]">
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
             </svg>
           </button>
-          <span className="ml-3 font-bold text-white text-sm">PaperScholar</span>
+          <span className="ml-3 font-bold text-[var(--text-primary)] text-sm">PaperScholar</span>
         </div>
         <div className="p-4 md:p-6">{children}</div>
       </main>

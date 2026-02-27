@@ -9,7 +9,7 @@ class GenerateRequest(BaseModel):
     task_type: str = Field(..., pattern="^(diagram|plot)$")
     content: str = Field(..., min_length=10)
     visual_intent: str = Field(..., min_length=5)
-    pipeline_mode: str = Field(default="dev_full", pattern="^(vanilla|dev_planner|dev_planner_stylist|dev_planner_critic|dev_full)$")
+    pipeline_mode: str = Field(default="demo_full", pattern="^(vanilla|dev_planner|dev_planner_stylist|dev_planner_critic|dev_full|demo_planner_critic|demo_full)$")
     retrieval_setting: str = Field(default="auto", pattern="^(auto|manual|random|none)$")
     num_candidates: int = Field(default=1, ge=1, le=20)
     aspect_ratio: Optional[str] = "1:1"

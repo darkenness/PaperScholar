@@ -15,7 +15,7 @@ class BaseLLMClient(ABC):
         """Send chat messages and return text response."""
 
     @abstractmethod
-    async def chat_with_images(self, contents: list[Any], temperature: float = 0.7, max_tokens: Optional[int] = None, **kwargs) -> str:
+    async def chat_with_images(self, contents: list[Any], temperature: float = 0.7, max_tokens: Optional[int] = None, system_prompt: Optional[str] = None, **kwargs) -> str:
         """Send multimodal content (text + images) and return text response."""
 
     @abstractmethod

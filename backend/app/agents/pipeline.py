@@ -110,7 +110,7 @@ class PlannerAgent(BaseAgent):
 
         # Use multimodal call if we have images, otherwise plain chat
         if any(isinstance(c, dict) for c in contents):
-            description = await self.chat_lb.chat_with_images(contents=contents, temperature=1.0)
+            description = await self.chat_lb.chat_with_images(contents=contents, temperature=1.0, system_prompt=system_prompt)
         else:
             full_prompt = "\n".join(str(c) for c in contents)
             messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": full_prompt}]
@@ -289,7 +289,7 @@ class CriticAgent(BaseAgent):
         contents.append(f"Detailed Description: {detailed_description}\n{content_labels[0]}: {content_raw}\n{content_labels[1]}: {caption}\nYour Output:")
 
         try:
-            response = await self.chat_lb.chat_with_images(contents=contents, temperature=0.7)
+            response = await self.chat_lb.chat_with_images(contents=contents, temperature=0.7, system_prompt=system_prompt)
         except Exception:
             fallback_prompt = f"{critique_target}\n\nDetailed Description: {detailed_description}\n{content_labels[0]}: {content_raw}\n{content_labels[1]}: {caption}\nYour Output:"
             response = await self.chat_lb.chat(
@@ -345,7 +345,7 @@ class PipelineEngine:
         self.retriever = RetrieverAgent(chat_lb=chat_lb, dataset_path=dataset_path)
         self.planner = PlannerAgent(chat_lb=chat_lb)
         self.stylist = StylistAgent(chat_lb=chat_lb)
-        self.visualizer = VisualizerAgent(image_lb=image_lb)
+        self.visualizer = VisualizerAgent(chat_lb=chat_lb, image_lb=image_lb)
         self.critic = CriticAgent(chat_lb=chat_lb, image_lb=image_lb)
         self.polish = PolishAgent(chat_lb=chat_lb, image_lb=image_lb)
 
@@ -360,7 +360,7 @@ class PipelineEngine:
         await self._emit(on_event, "stage", {"name": "pipeline", "status": "started", "mode": mode, "progress": 0.0})
 
         # Run retriever first for modes that need references
-        if mode in ("dev_full", "dev_planner", "dev_planner_stylist", "dev_planner_critic"):
+        if mode in ("dev_full", "demo_full", "dev_planner", "dev_planner_stylist", "dev_planner_critic", "demo_planner_critic"):
             data = await self.retriever.process(data, on_event)
 
         if num_candidates > 1:
@@ -384,16 +384,17 @@ class PipelineEngine:
             data = await self.planner.process(data, on_event)
             data = await self.stylist.process(data, on_event)
             data = await self.visualizer.process(data, on_event)
-        elif mode == "dev_planner_critic":
+        elif mode in ("dev_planner_critic", "demo_planner_critic"):
             data = await self.planner.process(data, on_event)
             data = await self.visualizer.process(data, on_event)
-            data = await self._run_critic_loop(data, max_critic_rounds, on_event)
-        elif mode == "dev_full":
+            data = await self._run_critic_loop(data, max_critic_rounds, on_event, source="planner")
+        elif mode in ("dev_full", "demo_full"):
             data = await self.planner.process(data, on_event)
             data = await self.stylist.process(data, on_event)
             data = await self.visualizer.process(data, on_event)
-            data = await self._run_critic_loop(data, max_critic_rounds, on_event)
-            data = await self.polish.process(data, on_event)
+            data = await self._run_critic_loop(data, max_critic_rounds, on_event, source="stylist")
+            if mode == "dev_full":
+                data = await self.polish.process(data, on_event)
         else:
             raise ValueError(f"Unknown pipeline mode: {mode}")
         return data
@@ -414,15 +415,17 @@ class PipelineEngine:
 
         # First run shared steps: retriever is already done, run planner once
         data = await self.planner.process(data, on_event)
-        if mode in ("dev_planner_stylist", "dev_full"):
+        if mode in ("dev_planner_stylist", "dev_full", "demo_full"):
             data = await self.stylist.process(data, on_event)
 
         # Now fork: run visualizer + critic for each candidate in parallel
         async def generate_one(candidate_idx: int) -> Dict[str, Any]:
             cdata = {**data, "candidate_index": candidate_idx}
             cdata = await self.visualizer.process(cdata, on_event)
-            if mode in ("dev_planner_critic", "dev_full"):
-                cdata = await self._run_critic_loop(cdata, max_critic_rounds, on_event)
+            if mode in ("dev_planner_critic", "demo_planner_critic"):
+                cdata = await self._run_critic_loop(cdata, max_critic_rounds, on_event, source="planner")
+            elif mode in ("dev_full", "demo_full"):
+                cdata = await self._run_critic_loop(cdata, max_critic_rounds, on_event, source="stylist")
             if mode == "dev_full":
                 cdata = await self.polish.process(cdata, on_event)
             return cdata
@@ -460,10 +463,10 @@ class PipelineEngine:
 
         return data
 
-    async def _run_critic_loop(self, data: Dict[str, Any], max_rounds: int, on_event: Optional[Callable]) -> Dict[str, Any]:
+    async def _run_critic_loop(self, data: Dict[str, Any], max_rounds: int, on_event: Optional[Callable], source: str = "stylist") -> Dict[str, Any]:
         for i in range(max_rounds):
             data["critic_round"] = i
-            data = await self.critic.process(data, on_event)
+            data = await self.critic.process(data, on_event, source=source)
 
             if data.get("critic_suggestions", "").strip() == "No changes needed.":
                 logger.info(f"Critic round {i}: no changes needed, stopping")

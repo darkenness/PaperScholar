@@ -119,6 +119,12 @@ class LoadBalancer:
     async def generate_image(self, prompt: str, **kwargs) -> Optional[bytes]:
         return await self.call("generate_image", prompt=prompt, **kwargs)
 
+    async def generate_image_with_images(self, prompt: str, images: list[dict], **kwargs) -> Optional[bytes]:
+        return await self.call("generate_image_with_images", prompt=prompt, images=images, **kwargs)
+
+    async def generate_image_from_chat(self, contents: list[Any], **kwargs) -> Optional[bytes]:
+        return await self.call("generate_image_from_chat", contents=contents, **kwargs)
+
     def reset_all(self):
         """Reset all client states (re-enable disabled clients)."""
         for state in self._states:

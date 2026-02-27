@@ -47,7 +47,7 @@ class AnthropicClient(BaseLLMClient):
             data = resp.json()
             return data["content"][0]["text"]
 
-    async def chat_with_images(self, contents: list[Any], temperature: float = 0.7, max_tokens: Optional[int] = None, **kwargs) -> str:
+    async def chat_with_images(self, contents: list[Any], temperature: float = 0.7, max_tokens: Optional[int] = None, system_prompt: Optional[str] = None, **kwargs) -> str:
         message_content = []
         for item in contents:
             if isinstance(item, str):
@@ -74,6 +74,8 @@ class AnthropicClient(BaseLLMClient):
             "max_tokens": max_tokens or 4096,
             "temperature": temperature,
         }
+        if system_prompt:
+            payload["system"] = system_prompt
 
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(

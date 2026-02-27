@@ -5,7 +5,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.models.api_key import ApiApplication
+from app.core.security import encrypt_api_key, decrypt_api_key, mask_api_key
+from app.models.api_key import ApiApplication, ApiKeyConfig
 from app.models.generation import GenerationTask
 from app.models.system import Announcement, ApiUsageLog, SystemConfig
 from app.models.user import User
@@ -174,6 +175,110 @@ async def get_stats(admin: User = Depends(get_current_admin), db: AsyncSession =
         "total_tasks": total_tasks,
         "pending_applications": pending_apps,
     }
+
+
+# ── System API Keys (shared keys for approved users) ──
+
+@router.get("/system-keys")
+async def list_system_keys(admin: User = Depends(get_current_admin), db: AsyncSession = Depends(get_db)):
+    """List all system-level API keys (owned by admin, user_id=admin.id)."""
+    result = await db.execute(
+        select(ApiKeyConfig)
+        .where(ApiKeyConfig.user_id == admin.id, ApiKeyConfig.priority == -1)
+        .order_by(ApiKeyConfig.model_type, ApiKeyConfig.id)
+    )
+    keys = result.scalars().all()
+    items = []
+    for k in keys:
+        try:
+            preview = mask_api_key(decrypt_api_key(k.api_key_encrypted))
+        except Exception:
+            preview = "***"
+        items.append({
+            "id": k.id, "model_type": k.model_type, "provider": k.provider,
+            "base_url": k.base_url, "api_key_preview": preview,
+            "model_name": k.model_name, "is_verified": k.is_verified,
+            "is_enabled": k.is_enabled,
+        })
+    return {"items": items}
+
+
+@router.post("/system-keys", status_code=status.HTTP_201_CREATED)
+async def add_system_key(
+    model_type: str, provider: str, api_key: str,
+    base_url: str = None, model_name: str = None,
+    admin: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Add a system-level API key. Uses priority=-1 as a marker for system keys."""
+    cfg = ApiKeyConfig(
+        user_id=admin.id,
+        model_type=model_type,
+        provider=provider,
+        base_url=base_url,
+        api_key_encrypted=encrypt_api_key(api_key),
+        model_name=model_name,
+        priority=-1,  # marker: system key
+        is_verified=False,
+    )
+    db.add(cfg)
+    await db.commit()
+    await db.refresh(cfg)
+    return {"id": cfg.id, "message": "系统API Key已添加，请验证有效性"}
+
+
+@router.post("/system-keys/{key_id}/verify")
+async def verify_system_key(key_id: int, admin: User = Depends(get_current_admin), db: AsyncSession = Depends(get_db)):
+    """Verify a system API key by making a test request."""
+    result = await db.execute(select(ApiKeyConfig).where(ApiKeyConfig.id == key_id, ApiKeyConfig.priority == -1))
+    cfg = result.scalar_one_or_none()
+    if not cfg:
+        raise HTTPException(status_code=404, detail="系统API Key不存在")
+
+    raw_key = decrypt_api_key(cfg.api_key_encrypted)
+    verified = False
+    error_msg = ""
+    try:
+        import httpx
+        if cfg.provider == "openai_compat":
+            base_url = cfg.base_url or "https://openrouter.ai/api/v1"
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(f"{base_url}/models", headers={"Authorization": f"Bearer {raw_key}"})
+                verified = resp.status_code == 200
+                if not verified: error_msg = f"HTTP {resp.status_code}"
+        elif cfg.provider == "gemini":
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={raw_key}")
+                verified = resp.status_code == 200
+                if not verified: error_msg = f"HTTP {resp.status_code}"
+        elif cfg.provider == "anthropic":
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={"x-api-key": raw_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                    json={"model": "claude-3-haiku-20240307", "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]},
+                )
+                verified = resp.status_code in (200, 429)
+                if not verified: error_msg = f"HTTP {resp.status_code}"
+    except Exception as e:
+        error_msg = str(e)
+
+    cfg.is_verified = verified
+    cfg.last_verified_at = datetime.now(timezone.utc)
+    cfg.last_error = error_msg if not verified else None
+    await db.commit()
+    return {"is_verified": verified, "message": "验证通过" if verified else f"验证失败: {error_msg}"}
+
+
+@router.delete("/system-keys/{key_id}")
+async def delete_system_key(key_id: int, admin: User = Depends(get_current_admin), db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(ApiKeyConfig).where(ApiKeyConfig.id == key_id, ApiKeyConfig.priority == -1))
+    cfg = result.scalar_one_or_none()
+    if not cfg:
+        raise HTTPException(status_code=404, detail="系统API Key不存在")
+    await db.delete(cfg)
+    await db.commit()
+    return {"message": "已删除"}
 
 
 # ── System Config ──

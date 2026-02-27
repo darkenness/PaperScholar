@@ -57,8 +57,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         method = request.method
 
-        # Skip non-API routes and health checks
+        # Skip non-API routes, health checks, and SSE streams
         if not path.startswith("/api/") or path == "/api/health":
+            return await call_next(request)
+        if "/stream" in path:
             return await call_next(request)
 
         max_requests, window = _get_rate_limit(path, method)
@@ -66,10 +68,16 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         bucket_key = f"{client_key}:{path.split('/')[3] if len(path.split('/')) > 3 else 'root'}"
 
         now = time.time()
-        # Clean old entries
+        # Clean old entries for this bucket
         _request_log[bucket_key] = [
             t for t in _request_log[bucket_key] if t > now - window
         ]
+
+        # Periodically purge empty bucket keys to prevent memory growth
+        if len(_request_log) > 1000:
+            stale_keys = [k for k, v in _request_log.items() if not v]
+            for k in stale_keys:
+                del _request_log[k]
 
         if len(_request_log[bucket_key]) >= max_requests:
             raise HTTPException(

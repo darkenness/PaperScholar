@@ -162,9 +162,9 @@ async def get_task_status(
             ResultResponse(
                 id=r.id,
                 candidate_index=r.candidate_index,
-                image_url=f"/api/v1/files/{r.image_path}" if r.image_path else None,
-                thumbnail_url=f"/api/v1/files/{r.thumbnail_path}" if r.thumbnail_path else None,
-                svg_url=f"/api/v1/files/{r.svg_path}" if r.svg_path else None,
+                image_url=f"/uploads/{r.image_path}" if r.image_path else None,
+                thumbnail_url=f"/uploads/{r.thumbnail_path}" if r.thumbnail_path else None,
+                svg_url=f"/uploads/{r.svg_path}" if r.svg_path else None,
                 quality_score=r.quality_score,
                 is_favorited=r.is_favorited,
                 created_at=r.created_at,
@@ -216,8 +216,8 @@ async def get_history(
             "status": task.status,
             "progress": task.progress,
             "created_at": task.created_at.isoformat(),
-            "image_url": f"/api/v1/files/{first_result.image_path}" if first_result and first_result.image_path else None,
-            "thumbnail_url": f"/api/v1/files/{first_result.thumbnail_path}" if first_result and first_result.thumbnail_path else None,
+            "image_url": f"/uploads/{first_result.image_path}" if first_result and first_result.image_path else None,
+            "thumbnail_url": f"/uploads/{first_result.thumbnail_path}" if first_result and first_result.thumbnail_path else None,
             "quality_score": first_result.quality_score if first_result else None,
             "is_favorited": first_result.is_favorited if first_result else False,
         })

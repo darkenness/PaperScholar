@@ -37,7 +37,7 @@ class OpenAICompatClient(BaseLLMClient):
             data = resp.json()
             return data["choices"][0]["message"]["content"]
 
-    async def chat_with_images(self, contents: list[Any], temperature: float = 0.7, max_tokens: Optional[int] = None, **kwargs) -> str:
+    async def chat_with_images(self, contents: list[Any], temperature: float = 0.7, max_tokens: Optional[int] = None, system_prompt: Optional[str] = None, **kwargs) -> str:
         message_content = []
         for item in contents:
             if isinstance(item, str):
@@ -54,9 +54,14 @@ class OpenAICompatClient(BaseLLMClient):
                     "image_url": {"url": f"data:image/png;base64,{b64}"},
                 })
 
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": message_content})
+
         payload = {
             "model": self.model,
-            "messages": [{"role": "user", "content": message_content}],
+            "messages": messages,
             "temperature": temperature,
         }
         if max_tokens:
@@ -73,11 +78,26 @@ class OpenAICompatClient(BaseLLMClient):
             return data["choices"][0]["message"]["content"]
 
     async def generate_image(self, prompt: str, **kwargs) -> Optional[bytes]:
+        # Map aspect_ratio to size if no explicit size given
+        size = kwargs.get("size")
+        if not size:
+            aspect_ratio = kwargs.get("aspect_ratio", "1:1")
+            size_map = {
+                "1:1": "1024x1024",
+                "16:9": "1792x1024",
+                "4:3": "1344x1024",
+                "3:2": "1536x1024",
+                "21:9": "1792x768",
+                "9:16": "1024x1792",
+                "3:4": "1024x1344",
+            }
+            size = size_map.get(aspect_ratio, "1024x1024")
+
         payload = {
             "model": kwargs.get("image_model", self.model),
             "prompt": prompt,
             "n": 1,
-            "size": kwargs.get("size", "1024x1024"),
+            "size": size,
             "response_format": "b64_json",
         }
 

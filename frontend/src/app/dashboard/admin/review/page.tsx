@@ -33,13 +33,13 @@ export default function AdminReviewPage() {
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-white">API 申请审核</h1>
-        <p className="text-gray-400 text-sm mt-1">审核用户的系统 API 使用申请</p>
+        <h1 className="text-2xl font-bold text-[var(--text-primary)]">API 申请审核</h1>
+        <p className="text-[var(--text-muted)] text-sm mt-1">审核用户的系统 API 使用申请</p>
       </div>
 
       <div className="flex gap-2">
         {[{ v: 'pending', l: '待审核' }, { v: 'approved', l: '已批准' }, { v: 'rejected', l: '已拒绝' }, { v: 'all', l: '全部' }].map((f) => (
-          <button key={f.v} onClick={() => setFilter(f.v)} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${filter === f.v ? 'bg-primary-600 text-white' : 'bg-white/5 text-gray-400 hover:text-white'}`}>
+          <button key={f.v} onClick={() => setFilter(f.v)} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${filter === f.v ? 'bg-primary-600 text-white' : 'bg-[var(--badge-bg)] text-[var(--text-muted)] hover:text-[var(--text-primary)]'}`}>
             {f.l}
           </button>
         ))}
@@ -48,7 +48,7 @@ export default function AdminReviewPage() {
       {loading ? (
         <div className="flex justify-center py-12"><div className="w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" /></div>
       ) : apps.length === 0 ? (
-        <div className="tech-panel p-12 text-center text-gray-500">暂无{filter === 'pending' ? '待审核' : ''}申请</div>
+        <div className="tech-panel p-12 text-center text-[var(--text-muted)]">暂无{filter === 'pending' ? '待审核' : ''}申请</div>
       ) : (
         <div className="space-y-4">
           {apps.map((app: any) => (
@@ -60,21 +60,21 @@ export default function AdminReviewPage() {
                       {app.username?.charAt(0).toUpperCase()}
                     </div>
                     <div>
-                      <span className="font-medium text-white">{app.username}</span>
-                      <span className="text-xs text-gray-500 ml-2">{app.email}</span>
+                      <span className="font-medium text-[var(--text-primary)]">{app.username}</span>
+                      <span className="text-xs text-[var(--text-muted)] ml-2">{app.email}</span>
                     </div>
                     <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${app.status === 'approved' ? 'bg-green-500/20 text-green-400' : app.status === 'rejected' ? 'bg-red-500/20 text-red-400' : 'bg-yellow-500/20 text-yellow-400'}`}>
                       {app.status === 'approved' ? '已批准' : app.status === 'rejected' ? '已拒绝' : '待审核'}
                     </span>
                   </div>
-                  <p className="text-sm text-gray-300 mb-1">{app.reason}</p>
-                  <p className="text-[10px] text-gray-500 font-mono">申请时间: {new Date(app.created_at).toLocaleString()}</p>
-                  {app.review_comment && <p className="text-xs text-gray-400 mt-1">审核备注: {app.review_comment}</p>}
+                  <p className="text-sm text-[var(--text-secondary)] mb-1">{app.reason}</p>
+                  <p className="text-[10px] text-[var(--text-muted)] font-mono">申请时间: {new Date(app.created_at).toLocaleString()}</p>
+                  {app.review_comment && <p className="text-xs text-[var(--text-muted)] mt-1">审核备注: {app.review_comment}</p>}
                 </div>
               </div>
 
               {app.status === 'pending' && (
-                <div className="mt-4 border-t border-white/5 pt-4">
+                <div className="mt-4 border-t border-[var(--border-subtle)] pt-4">
                   {reviewingId === app.id ? (
                     <div className="space-y-3">
                       <textarea value={reviewComment} onChange={(e) => setReviewComment(e.target.value)} placeholder="审核备注（可选）" rows={2} className="w-full input-tech text-sm" />

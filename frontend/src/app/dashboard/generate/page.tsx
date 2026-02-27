@@ -3,12 +3,21 @@
 import { useState } from 'react';
 import { generateApi } from '@/lib/api';
 
-const PIPELINE_MODES = [
-  { value: 'dev_full', label: '完整Pipeline', desc: 'Retriever → Planner → Stylist → Visualizer → Critic' },
-  { value: 'dev_planner_critic', label: 'Planner + Critic', desc: 'Planner → Visualizer → Critic循环' },
-  { value: 'dev_planner_stylist', label: 'Planner + Stylist', desc: 'Planner → Stylist → Visualizer' },
-  { value: 'dev_planner', label: '仅Planner', desc: 'Planner → Visualizer' },
+// Diagram pipeline modes — aligned with PaperBanana demo
+const DIAGRAM_PIPELINE_MODES = [
+  { value: 'demo_full', label: '完整Pipeline（推荐）', desc: 'Retriever → Planner → Stylist → Visualizer → Critic → Visualizer（Stylist 可让图更美观，但可能过度简化，建议两种模式都试试）' },
+  { value: 'demo_planner_critic', label: 'Planner + Critic', desc: 'Planner → Visualizer → Critic → Visualizer' },
+  { value: 'dev_planner_stylist', label: 'Planner + Stylist（无Critic）', desc: 'Retriever → Planner → Stylist → Visualizer' },
+  { value: 'dev_planner', label: '仅Planner（无Critic）', desc: 'Retriever → Planner → Visualizer' },
   { value: 'vanilla', label: '直接生成', desc: '无规划，直接生成' },
+];
+
+// Plot pipeline modes — same agent chain structure, but Visualizer uses code generation
+const PLOT_PIPELINE_MODES = [
+  { value: 'demo_full', label: '完整Pipeline（推荐）', desc: 'Retriever → Planner → Stylist → Visualizer(matplotlib) → Critic → Visualizer' },
+  { value: 'demo_planner_critic', label: 'Planner + Critic', desc: 'Planner → Visualizer(matplotlib) → Critic → Visualizer' },
+  { value: 'dev_planner', label: '仅Planner', desc: 'Retriever → Planner → Visualizer(matplotlib)' },
+  { value: 'vanilla', label: '直接生成', desc: '无规划，直接生成代码' },
 ];
 
 const RETRIEVAL_SETTINGS = [
@@ -17,7 +26,7 @@ const RETRIEVAL_SETTINGS = [
   { value: 'none', label: '无参考' },
 ];
 
-const ASPECT_RATIOS = ['1:1', '16:9', '4:3', '3:2'];
+const DIAGRAM_ASPECT_RATIOS = ['1:1', '16:9', '4:3', '3:2', '21:9'];
 
 interface SSEEvent {
   type: string;
@@ -29,10 +38,10 @@ export default function GeneratePage() {
   const [content, setContent] = useState('');
   const [caption, setCaption] = useState('');
   const [taskType, setTaskType] = useState('diagram');
-  const [pipelineMode, setPipelineMode] = useState('dev_full');
+  const [pipelineMode, setPipelineMode] = useState('demo_full');
   const [retrievalSetting, setRetrievalSetting] = useState('auto');
   const [numCandidates, setNumCandidates] = useState(1);
-  const [aspectRatio, setAspectRatio] = useState('1:1');
+  const [aspectRatio, setAspectRatio] = useState('16:9');
   const [maxCriticRounds, setMaxCriticRounds] = useState(3);
 
   const [loading, setLoading] = useState(false);
@@ -46,7 +55,7 @@ export default function GeneratePage() {
 
   const handleGenerate = async () => {
     if (!content.trim() || !caption.trim()) {
-      setError('请输入方法描述和图表说明');
+      setError(taskType === 'diagram' ? '请输入方法描述和图表说明' : '请输入原始数据和可视化意图');
       return;
     }
     setError('');
@@ -65,7 +74,7 @@ export default function GeneratePage() {
         pipeline_mode: pipelineMode,
         retrieval_setting: retrievalSetting,
         num_candidates: numCandidates,
-        aspect_ratio: aspectRatio,
+        aspect_ratio: taskType === 'diagram' ? aspectRatio : undefined,
         max_critic_rounds: maxCriticRounds,
       });
 
@@ -113,184 +122,280 @@ export default function GeneratePage() {
     }
   };
 
+  const [drawerOpen, setDrawerOpen] = useState(false);
+
   return (
-    <div className="max-w-7xl mx-auto space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-white">图表生成</h1>
-        <p className="text-gray-400 text-sm mt-1">输入论文方法描述，AI 自动生成高质量学术图表</p>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left: Input Panel */}
-        <div className="lg:col-span-1 space-y-4">
-          {/* Task Type */}
-          <div className="tech-panel p-4">
-            <label className="text-xs font-bold text-gray-400 mb-2 block">图表类型</label>
-            <div className="flex gap-2">
-              {['diagram', 'plot'].map((t) => (
-                <button
-                  key={t}
-                  onClick={() => setTaskType(t)}
-                  className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${
-                    taskType === t ? 'bg-primary-600 text-white' : 'bg-white/5 text-gray-400 hover:text-white'
-                  }`}
-                >
-                  {t === 'diagram' ? '示意图' : '统计图'}
-                </button>
-              ))}
-            </div>
+    <div className="space-y-4">
+      {/* Top bar: title + config toggle */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-bold text-[var(--text-primary)]">图表生成</h1>
+          <p className="text-[var(--text-muted)] text-xs mt-0.5">
+            {taskType === 'diagram' ? '示意图模式 · 图像生成' : '统计图模式 · matplotlib'}
+            {' · '}{(taskType === 'diagram' ? DIAGRAM_PIPELINE_MODES : PLOT_PIPELINE_MODES).find(m => m.value === pipelineMode)?.label}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {/* Quick task type toggle */}
+          <div className="hidden sm:flex items-center border border-[var(--border-main)] text-xs">
+            {['diagram', 'plot'].map((t) => (
+              <button
+                key={t}
+                onClick={() => { setTaskType(t); setPipelineMode('demo_full'); if (t === 'plot') setAspectRatio('1:1'); }}
+                className={`px-3 py-1.5 font-medium transition-colors ${
+                  taskType === t ? 'bg-primary-600 text-white' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]'
+                }`}
+              >
+                {t === 'diagram' ? '示意图' : '统计图'}
+              </button>
+            ))}
           </div>
-
-          {/* Content Input */}
-          <div className="tech-panel p-4">
-            <label className="text-xs font-bold text-gray-400 mb-2 block">方法描述 (Method Section)</label>
-            <textarea
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              placeholder="粘贴你的论文方法部分内容 (推荐 Markdown 格式)..."
-              rows={8}
-              className="w-full input-tech resize-none text-sm"
-            />
-          </div>
-
-          {/* Caption */}
-          <div className="tech-panel p-4">
-            <label className="text-xs font-bold text-gray-400 mb-2 block">图表说明 (Figure Caption)</label>
-            <textarea
-              value={caption}
-              onChange={(e) => setCaption(e.target.value)}
-              placeholder="描述你期望生成的图表内容..."
-              rows={3}
-              className="w-full input-tech resize-none text-sm"
-            />
-          </div>
-
-          {/* Settings */}
-          <div className="tech-panel p-4 space-y-3">
-            <label className="text-xs font-bold text-gray-400 block">生成设置</label>
-
-            <div>
-              <label className="text-[11px] text-gray-500 mb-1 block">Pipeline 模式</label>
-              <select value={pipelineMode} onChange={(e) => setPipelineMode(e.target.value)} className="w-full input-tech text-sm py-2">
-                {PIPELINE_MODES.map((m) => (
-                  <option key={m.value} value={m.value}>{m.label}</option>
-                ))}
-              </select>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-[11px] text-gray-500 mb-1 block">参考图检索</label>
-                <select value={retrievalSetting} onChange={(e) => setRetrievalSetting(e.target.value)} className="w-full input-tech text-sm py-2">
-                  {RETRIEVAL_SETTINGS.map((s) => (
-                    <option key={s.value} value={s.value}>{s.label}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="text-[11px] text-gray-500 mb-1 block">宽高比</label>
-                <select value={aspectRatio} onChange={(e) => setAspectRatio(e.target.value)} className="w-full input-tech text-sm py-2">
-                  {ASPECT_RATIOS.map((r) => (
-                    <option key={r} value={r}>{r}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-[11px] text-gray-500 mb-1 block">候选数量: {numCandidates}</label>
-                <input type="range" min={1} max={10} value={numCandidates} onChange={(e) => setNumCandidates(Number(e.target.value))} className="w-full" />
-              </div>
-              <div>
-                <label className="text-[11px] text-gray-500 mb-1 block">Critic轮数: {maxCriticRounds}</label>
-                <input type="range" min={1} max={5} value={maxCriticRounds} onChange={(e) => setMaxCriticRounds(Number(e.target.value))} className="w-full" />
-              </div>
-            </div>
-          </div>
-
-          {error && (
-            <div className="text-red-400 text-sm bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-2">{error}</div>
-          )}
-
-          <button onClick={handleGenerate} disabled={loading} className="w-full btn-primary py-3 disabled:opacity-50">
+          <button
+            onClick={() => setDrawerOpen(true)}
+            className="flex items-center gap-2 px-4 py-2 border border-[var(--border-main)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors text-xs font-medium"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+            </svg>
+            配置与输入
+          </button>
+          <button
+            onClick={handleGenerate}
+            disabled={loading}
+            className="btn-primary py-2 px-5 text-xs disabled:opacity-50"
+          >
             {loading ? '生成中...' : '开始生成'}
           </button>
         </div>
+      </div>
 
-        {/* Right: Preview & Events */}
-        <div className="lg:col-span-2 space-y-4">
-          {/* Progress Bar */}
-          {(loading || isDone) && (
-            <div className="tech-panel p-4">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm font-medium text-white">
-                  {isDone ? '生成完成' : currentStage ? `正在执行: ${currentStage}` : '准备中...'}
-                </span>
-                <span className="text-xs text-gray-400">{Math.round(progress * 100)}%</span>
+      {error && (
+        <div className="text-red-400 text-sm bg-red-500/10 border border-red-500/20 px-4 py-2">{error}</div>
+      )}
+
+      {/* Main content: full-width preview area */}
+      <div className="space-y-4">
+        {/* Progress Bar */}
+        {(loading || isDone) && (
+          <div className="tech-panel p-4">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm font-medium text-[var(--text-primary)]">
+                {isDone ? '生成完成' : currentStage ? `正在执行: ${currentStage}` : '准备中...'}
+              </span>
+              <span className="text-xs text-[var(--text-muted)]">{Math.round(progress * 100)}%</span>
+            </div>
+            <div className="w-full h-1.5 bg-[var(--bg-inset)] overflow-hidden">
+              <div
+                className="h-full bg-primary-500 transition-all duration-500"
+                style={{ width: `${Math.round(progress * 100)}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Preview Images — responsive grid */}
+        {previewImages.length > 0 && (
+          <div className="tech-panel p-4">
+            <h3 className="text-sm font-bold text-[var(--text-primary)] mb-3">预览图 ({previewImages.length})</h3>
+            <div className={`grid gap-4 ${
+              previewImages.length === 1 ? 'grid-cols-1 max-w-2xl mx-auto' :
+              previewImages.length === 2 ? 'grid-cols-1 md:grid-cols-2' :
+              previewImages.length <= 4 ? 'grid-cols-2 md:grid-cols-2 lg:grid-cols-4' :
+              'grid-cols-2 md:grid-cols-3 lg:grid-cols-5'
+            }`}>
+              {previewImages.map((url, i) => (
+                <div key={i} className="overflow-hidden border border-[var(--border-main)] bg-white group">
+                  <img src={url} alt={`Preview ${i + 1}`} className="w-full h-auto group-hover:scale-105 transition-transform duration-300" />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Events Log */}
+        {events.length > 0 && (
+          <div className="tech-panel p-4">
+            <h3 className="text-sm font-bold text-[var(--text-primary)] mb-3">Pipeline 日志</h3>
+            <div className="max-h-60 overflow-y-auto space-y-1.5">
+              {events.map((evt, i) => (
+                <div key={i} className="flex items-start gap-2 text-xs">
+                  <span className="text-[var(--text-muted)] font-mono shrink-0">{evt.time}</span>
+                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold shrink-0 ${
+                    evt.type === 'stage' ? 'bg-primary-500/20 text-primary-400' :
+                    evt.type === 'intermediate' ? 'bg-emerald-500/20 text-emerald-400' :
+                    'bg-gray-500/20 text-gray-400'
+                  }`}>
+                    {evt.type}
+                  </span>
+                  <span className="text-[var(--text-secondary)] break-all">
+                    {evt.type === 'stage' ? `${evt.data.name} - ${evt.data.status}` :
+                     evt.data.type === 'text' ? evt.data.content?.substring(0, 150) + '...' :
+                     evt.data.type === 'image' ? `[图片] ${evt.data.stage || ''}` :
+                     JSON.stringify(evt.data).substring(0, 100)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Empty State */}
+        {!loading && !isDone && events.length === 0 && (
+          <div className="tech-panel p-16 text-center">
+            <svg className="w-20 h-20 mx-auto mb-4 text-[var(--text-faint)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={0.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+            <h3 className="text-lg font-medium text-[var(--text-secondary)] mb-2">等待生成</h3>
+            <p className="text-sm text-[var(--text-muted)] mb-6">点击右上角「配置与输入」填写内容，然后点击「开始生成」</p>
+            <button onClick={() => setDrawerOpen(true)} className="btn-primary text-xs py-2 px-6">
+              打开配置面板
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* ===== Floating Config Drawer ===== */}
+      {drawerOpen && (
+        <div className="fixed inset-0 z-50 flex justify-end" onClick={() => setDrawerOpen(false)}>
+          {/* Backdrop */}
+          <div className="absolute inset-0 bg-black/30" />
+          {/* Drawer */}
+          <div
+            className="relative w-full max-w-md h-full bg-[var(--bg-main)] border-l border-[var(--border-main)] flex flex-col shadow-2xl drawer-slide-in"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Drawer header */}
+            <div className="h-14 flex items-center justify-between px-5 border-b border-[var(--border-main)] shrink-0">
+              <h2 className="text-sm font-bold text-[var(--text-primary)]">生成配置</h2>
+              <button onClick={() => setDrawerOpen(false)} className="w-8 h-8 flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Drawer body — scrollable */}
+            <div className="flex-1 overflow-y-auto p-5 space-y-5">
+              {/* Task Type */}
+              <div>
+                <label className="text-[11px] font-bold text-[var(--text-muted)] mb-2 block uppercase tracking-wider">图表类型</label>
+                <div className="flex gap-2">
+                  {['diagram', 'plot'].map((t) => (
+                    <button
+                      key={t}
+                      onClick={() => { setTaskType(t); setPipelineMode('demo_full'); if (t === 'plot') setAspectRatio('1:1'); }}
+                      className={`flex-1 py-2 text-sm font-medium transition-all ${
+                        taskType === t ? 'bg-primary-600 text-white' : 'bg-[var(--badge-bg)] text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+                      }`}
+                    >
+                      {t === 'diagram' ? '示意图' : '统计图'}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[10px] text-[var(--text-faint)] mt-1">
+                  {taskType === 'diagram'
+                    ? '基于方法描述生成论文示意图（使用图像生成模型）'
+                    : '基于原始数据生成统计图表（使用 matplotlib 代码生成）'}
+                </p>
               </div>
-              <div className="w-full h-2 bg-dark-700 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-gradient-to-r from-primary-600 to-purple-500 rounded-full transition-all duration-500"
-                  style={{ width: `${Math.round(progress * 100)}%` }}
+
+              {/* Content */}
+              <div>
+                <label className="text-[11px] font-bold text-[var(--text-muted)] mb-1.5 block uppercase tracking-wider">
+                  {taskType === 'diagram' ? '方法描述' : '原始数据'}
+                </label>
+                <textarea
+                  value={content}
+                  onChange={(e) => setContent(e.target.value)}
+                  placeholder={taskType === 'diagram'
+                    ? '粘贴你的论文方法部分内容 (推荐 Markdown 格式)...'
+                    : '粘贴原始数据，支持 JSON、表格或 CSV 格式...'}
+                  rows={6}
+                  className="w-full input-tech resize-none text-sm"
                 />
               </div>
-            </div>
-          )}
 
-          {/* Preview Images */}
-          {previewImages.length > 0 && (
-            <div className="tech-panel p-4">
-              <h3 className="text-sm font-bold text-white mb-3">预览图</h3>
-              <div className="grid grid-cols-2 gap-3">
-                {previewImages.map((url, i) => (
-                  <div key={i} className="rounded-lg overflow-hidden border border-white/10 bg-white">
-                    <img src={url} alt={`Preview ${i + 1}`} className="w-full h-auto" />
+              {/* Caption */}
+              <div>
+                <label className="text-[11px] font-bold text-[var(--text-muted)] mb-1.5 block uppercase tracking-wider">
+                  {taskType === 'diagram' ? '图表说明' : '可视化意图'}
+                </label>
+                <textarea
+                  value={caption}
+                  onChange={(e) => setCaption(e.target.value)}
+                  placeholder={taskType === 'diagram'
+                    ? 'Figure 1: Overview of our framework...'
+                    : '柱状图对比各方法在不同数据集上的准确率...'}
+                  rows={3}
+                  className="w-full input-tech resize-none text-sm"
+                />
+              </div>
+
+              {/* Pipeline settings */}
+              <div className="space-y-3 pt-2 border-t border-[var(--border-subtle)]">
+                <label className="text-[11px] font-bold text-[var(--text-muted)] block uppercase tracking-wider">Pipeline 设置</label>
+                <div>
+                  <label className="text-[11px] text-[var(--text-muted)] mb-1 block">模式</label>
+                  <select value={pipelineMode} onChange={(e) => setPipelineMode(e.target.value)} className="w-full input-tech text-sm py-2">
+                    {(taskType === 'diagram' ? DIAGRAM_PIPELINE_MODES : PLOT_PIPELINE_MODES).map((m) => (
+                      <option key={m.value} value={m.value}>{m.label}</option>
+                    ))}
+                  </select>
+                  <p className="text-[10px] text-[var(--text-faint)] mt-1">
+                    {(taskType === 'diagram' ? DIAGRAM_PIPELINE_MODES : PLOT_PIPELINE_MODES).find(m => m.value === pipelineMode)?.desc}
+                  </p>
+                </div>
+
+                <div className={`grid gap-3 ${taskType === 'diagram' ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                  <div>
+                    <label className="text-[11px] text-[var(--text-muted)] mb-1 block">参考图检索</label>
+                    <select value={retrievalSetting} onChange={(e) => setRetrievalSetting(e.target.value)} className="w-full input-tech text-sm py-2">
+                      {RETRIEVAL_SETTINGS.map((s) => (
+                        <option key={s.value} value={s.value}>{s.label}</option>
+                      ))}
+                    </select>
                   </div>
-                ))}
+                  {taskType === 'diagram' && (
+                    <div>
+                      <label className="text-[11px] text-[var(--text-muted)] mb-1 block">宽高比</label>
+                      <select value={aspectRatio} onChange={(e) => setAspectRatio(e.target.value)} className="w-full input-tech text-sm py-2">
+                        {DIAGRAM_ASPECT_RATIOS.map((r) => (
+                          <option key={r} value={r}>{r}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[11px] text-[var(--text-muted)] mb-1 block">候选数量: {numCandidates}</label>
+                    <input type="range" min={1} max={10} value={numCandidates} onChange={(e) => setNumCandidates(Number(e.target.value))} className="w-full" />
+                  </div>
+                  <div>
+                    <label className="text-[11px] text-[var(--text-muted)] mb-1 block">Critic轮数: {maxCriticRounds}</label>
+                    <input type="range" min={1} max={5} value={maxCriticRounds} onChange={(e) => setMaxCriticRounds(Number(e.target.value))} className="w-full" />
+                  </div>
+                </div>
               </div>
             </div>
-          )}
 
-          {/* Events Log */}
-          {events.length > 0 && (
-            <div className="tech-panel p-4">
-              <h3 className="text-sm font-bold text-white mb-3">Pipeline 日志</h3>
-              <div className="max-h-80 overflow-y-auto space-y-1.5">
-                {events.map((evt, i) => (
-                  <div key={i} className="flex items-start gap-2 text-xs">
-                    <span className="text-gray-500 font-mono shrink-0">{evt.time}</span>
-                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold shrink-0 ${
-                      evt.type === 'stage' ? 'bg-primary-500/20 text-primary-400' :
-                      evt.type === 'intermediate' ? 'bg-emerald-500/20 text-emerald-400' :
-                      'bg-gray-500/20 text-gray-400'
-                    }`}>
-                      {evt.type}
-                    </span>
-                    <span className="text-gray-300 break-all">
-                      {evt.type === 'stage' ? `${evt.data.name} - ${evt.data.status}` :
-                       evt.data.type === 'text' ? evt.data.content?.substring(0, 150) + '...' :
-                       evt.data.type === 'image' ? `[图片] ${evt.data.stage || ''}` :
-                       JSON.stringify(evt.data).substring(0, 100)}
-                    </span>
-                  </div>
-                ))}
-              </div>
+            {/* Drawer footer */}
+            <div className="shrink-0 p-4 border-t border-[var(--border-main)]">
+              {error && (
+                <div className="text-red-400 text-xs bg-red-500/10 border border-red-500/20 px-3 py-1.5 mb-3">{error}</div>
+              )}
+              <button
+                onClick={() => { setDrawerOpen(false); handleGenerate(); }}
+                disabled={loading}
+                className="w-full btn-primary py-3 disabled:opacity-50"
+              >
+                {loading ? '生成中...' : '确认并生成'}
+              </button>
             </div>
-          )}
-
-          {/* Empty State */}
-          {!loading && !isDone && events.length === 0 && (
-            <div className="tech-panel p-12 text-center">
-              <svg className="w-16 h-16 mx-auto mb-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={0.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-              </svg>
-              <h3 className="text-lg font-medium text-gray-400 mb-2">等待生成</h3>
-              <p className="text-sm text-gray-500">填写左侧表单并点击「开始生成」</p>
-            </div>
-          )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

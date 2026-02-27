@@ -32,12 +32,12 @@ class RetrieverAgent(BaseAgent):
     def __init__(self, dataset_path: Optional[str] = None, **kwargs):
         super().__init__(**kwargs)
         self.dataset_path = dataset_path
-        self._candidate_pool: Optional[List[Dict]] = None
+        self._candidate_pools: Dict[str, List[Dict]] = {}
 
     def _load_candidates(self, task_type: str) -> List[Dict]:
         """Load reference candidates from dataset file."""
-        if self._candidate_pool is not None:
-            return self._candidate_pool
+        if task_type in self._candidate_pools:
+            return self._candidate_pools[task_type]
 
         if not self.dataset_path:
             return []
@@ -49,8 +49,8 @@ class RetrieverAgent(BaseAgent):
 
         try:
             with open(ref_path, "r", encoding="utf-8") as f:
-                self._candidate_pool = json.load(f)
-            return self._candidate_pool
+                self._candidate_pools[task_type] = json.load(f)
+            return self._candidate_pools[task_type]
         except Exception as e:
             print(f"[Retriever] Failed to load candidates: {e}")
             return []

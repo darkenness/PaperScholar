@@ -5,32 +5,78 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
 @layer base {
+  /* Light mode (default) — warm paper tones */
+  :root {
+    --bg-main: #eae7db;
+    --bg-panel: #f5f4ed;
+    --bg-hover: #e0dcd0;
+    --bg-inset: #ddd9cd;
+    --border-main: #c5c0b3;
+    --border-subtle: #d5d1c5;
+    --text-primary: #2d3748;
+    --text-secondary: #4a5568;
+    --text-muted: #718096;
+    --text-faint: #a0aec0;
+    --badge-bg: rgba(45,55,72,0.08);
+  }
+
+  /* Dark mode — warm zinc tones */
+  .dark {
+    --bg-main: #18181b;
+    --bg-panel: #27272a;
+    --bg-hover: #3f3f46;
+    --bg-inset: #1f1f23;
+    --border-main: #3f3f46;
+    --border-subtle: #333338;
+    --text-primary: #e4e4e7;
+    --text-secondary: #a1a1aa;
+    --text-muted: #71717a;
+    --text-faint: #52525b;
+    --badge-bg: rgba(255,255,255,0.06);
+  }
+
   body {
-    @apply bg-dark-900 text-gray-300 antialiased;
+    background-color: var(--bg-main);
+    color: var(--text-primary);
+    @apply antialiased;
     font-family: 'Inter', system-ui, sans-serif;
-    background-image: 
-      radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
-      linear-gradient(to right, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
-      linear-gradient(to bottom, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
-    background-size: 24px 24px, 120px 120px, 120px 120px;
+    transition: background-color 0.3s, color 0.3s;
+    background-image:
+      linear-gradient(to right, var(--border-subtle) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--border-subtle) 1px, transparent 1px);
+    background-size: 120px 120px;
+    background-position: center center;
   }
 }
 
 @layer components {
   /* Industrial, structural panels instead of glassmorphism */
   .tech-panel {
-    @apply bg-dark-800 border border-dark-600 rounded-none shadow-none;
+    background-color: var(--bg-panel);
+    border-color: var(--border-main);
+    @apply border rounded-none shadow-none transition-colors duration-300;
   }
   
   .tech-sidebar {
-    @apply bg-dark-900 border-r border-dark-600;
+    background-color: var(--bg-main);
+    border-color: var(--border-main);
+    @apply border-r transition-colors duration-300;
   }
   
   /* Utilitarian inputs */
   .input-tech {
-    @apply bg-dark-900 border border-dark-600 text-gray-200 rounded-none px-4 py-2.5
-           font-mono text-sm transition-colors duration-200 placeholder-gray-600
-           focus:border-primary-500 focus:ring-0 focus:outline-none focus:bg-dark-800;
+    background-color: var(--bg-main);
+    border-color: var(--border-main);
+    color: var(--text-primary);
+    @apply border rounded-none px-4 py-2.5
+           font-mono text-sm transition-colors duration-200
+           focus:border-primary-500 focus:ring-0 focus:outline-none;
+  }
+  .input-tech:focus {
+    background-color: var(--bg-panel);
+  }
+  .input-tech::placeholder {
+    color: var(--text-muted);
   }
   
   /* Functional, stark buttons */
@@ -41,18 +87,30 @@
   }
   
   .btn-ghost {
-    @apply border border-dark-600 text-gray-400 hover:text-gray-200 hover:border-dark-600 hover:bg-dark-800
-           rounded-none px-4 py-2 transition-colors text-sm;
+    border-color: var(--border-main);
+    color: var(--text-muted);
+    @apply border rounded-none px-4 py-2 transition-colors text-sm;
+  }
+  .btn-ghost:hover {
+    color: var(--text-primary);
+    border-color: var(--border-main);
+    background-color: var(--bg-panel);
   }
   
   /* Navigation */
   .nav-item {
+    color: var(--text-muted);
     @apply w-full flex items-center gap-3 px-4 py-3 rounded-none border-l-2 border-transparent
-           text-gray-400 hover:bg-dark-800 hover:text-gray-200 transition-colors text-sm;
+           transition-colors text-sm;
+  }
+  .nav-item:hover {
+    background-color: var(--bg-panel);
+    color: var(--text-primary);
   }
   
   .nav-item.active {
-    @apply bg-dark-800 border-primary-500 text-primary-400 font-medium;
+    background-color: var(--bg-panel);
+    @apply border-primary-500 text-primary-500 font-medium;
   }
 
   /* Decorative tech elements */
@@ -65,8 +123,17 @@
   }
 }
 
+/* Drawer slide-in animation */
+@keyframes slide-in-right {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+.drawer-slide-in {
+  animation: slide-in-right 0.25s ease-out;
+}
+
 /* Utilitarian Scrollbar */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { @apply bg-dark-900 border-l border-dark-600; }
-::-webkit-scrollbar-thumb { @apply bg-dark-600 rounded-none; }
-::-webkit-scrollbar-thumb:hover { @apply bg-gray-500; }
+::-webkit-scrollbar-track { background-color: var(--bg-main); border-left: 1px solid var(--border-main); }
+::-webkit-scrollbar-thumb { background-color: var(--border-main); @apply rounded-none; }
+::-webkit-scrollbar-thumb:hover { @apply bg-primary-500; }

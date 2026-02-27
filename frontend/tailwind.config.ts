@@ -9,10 +9,17 @@ const config: Config = {
     extend: {
       colors: {
         dark: {
-          900: '#0a0a0a', // Deepest background
-          800: '#121212', // Slightly lighter for panels
-          700: '#1a1a1a', // Hover states
-          600: '#2a2a2a', // Borders and dividers
+          900: '#18181b', // Main background (Lighter dark, zinc-900)
+          800: '#27272a', // Panel background (zinc-800)
+          700: '#3f3f46', // Hover states (zinc-700)
+          600: '#52525b', // Borders and dividers (zinc-600)
+        },
+        paper: {
+          100: '#f5f4ed', // Lighter paper (panels)
+          200: '#eae7db', // Base paper color (user provided)
+          300: '#e0dcd0', // Darker paper (hover/active)
+          700: '#a3a093', // Paper borders/dividers
+          900: '#2d3748', // Deep ink color for text in light mode
         },
         primary: {
           300: '#93bbfd',
@@ -31,7 +38,8 @@ const config: Config = {
         mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', '"Liberation Mono"', '"Courier New"', 'monospace'],
       },
       backgroundImage: {
-        'grid-pattern': 'linear-gradient(to right, #2a2a2a 1px, transparent 1px), linear-gradient(to bottom, #2a2a2a 1px, transparent 1px)',
+        'grid-pattern-dark': 'linear-gradient(to right, #52525b33 1px, transparent 1px), linear-gradient(to bottom, #52525b33 1px, transparent 1px)',
+        'grid-pattern-light': 'linear-gradient(to right, #a3a09333 1px, transparent 1px), linear-gradient(to bottom, #a3a09333 1px, transparent 1px)',
       }
     },
   },

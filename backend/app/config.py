@@ -1,13 +1,16 @@
-import secrets
+import warnings
 from typing import List
 from pydantic_settings import BaseSettings
+
+_DEFAULT_SECRET = "paperscholar-dev-secret-change-me-in-production-env"
+_DEFAULT_JWT_SECRET = "paperscholar-dev-jwt-secret-change-me-in-production-env"
 
 
 class Settings(BaseSettings):
     APP_NAME: str = "PaperScholar"
     APP_ENV: str = "development"
     DEBUG: bool = True
-    SECRET_KEY: str = secrets.token_urlsafe(32)
+    SECRET_KEY: str = _DEFAULT_SECRET
     API_V1_PREFIX: str = "/api/v1"
 
     # Database
@@ -17,7 +20,7 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
 
     # JWT
-    JWT_SECRET_KEY: str = secrets.token_urlsafe(32)
+    JWT_SECRET_KEY: str = _DEFAULT_JWT_SECRET
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 10080  # 7 days
 
@@ -42,3 +45,12 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# Warn if using default secrets (tokens/encryption will break across deployments)
+if settings.SECRET_KEY == _DEFAULT_SECRET or settings.JWT_SECRET_KEY == _DEFAULT_JWT_SECRET:
+    warnings.warn(
+        "\n[PaperScholar] WARNING: Using default SECRET_KEY / JWT_SECRET_KEY!\n"
+        "  Set SECRET_KEY and JWT_SECRET_KEY in .env for production.\n"
+        "  Without this, JWT tokens and encrypted API keys will break across restarts on different machines.",
+        stacklevel=2,
+    )

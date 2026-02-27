@@ -29,7 +29,15 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: '请求失败' }));
-    throw new Error(err.detail || `HTTP ${res.status}`);
+    let message = `HTTP ${res.status}`;
+    if (typeof err.detail === 'string') {
+      message = err.detail;
+    } else if (Array.isArray(err.detail)) {
+      message = err.detail.map((e: any) => e.msg || JSON.stringify(e)).join('; ');
+    } else if (err.detail) {
+      message = JSON.stringify(err.detail);
+    }
+    throw new Error(message);
   }
 
   return res.json();
@@ -42,7 +50,7 @@ export const authApi = {
       method: 'POST',
       body: JSON.stringify({ email }),
     }),
-  register: (data: { username: string; email: string; password: string; verification_code: string }) =>
+  register: (data: { username: string; email: string; password: string; verification_code?: string }) =>
     request<{ user: any; access_token: string }>(`${API_V1}/auth/register`, {
       method: 'POST',
       body: JSON.stringify(data),
@@ -119,6 +127,21 @@ export const adminApi = {
     request<any>(`${API_V1}/admin/announcements?content=${encodeURIComponent(content)}&is_important=${isImportant}`, { method: 'POST' }),
   deleteAnnouncement: (id: number) =>
     request<any>(`${API_V1}/admin/announcements/${id}`, { method: 'DELETE' }),
+  // System API Keys
+  getSystemKeys: () => request<any>(`${API_V1}/admin/system-keys`),
+  addSystemKey: (data: { model_type: string; provider: string; api_key: string; base_url?: string; model_name?: string }) => {
+    const params = new URLSearchParams();
+    params.set('model_type', data.model_type);
+    params.set('provider', data.provider);
+    params.set('api_key', data.api_key);
+    if (data.base_url) params.set('base_url', data.base_url);
+    if (data.model_name) params.set('model_name', data.model_name);
+    return request<any>(`${API_V1}/admin/system-keys?${params.toString()}`, { method: 'POST' });
+  },
+  verifySystemKey: (id: number) =>
+    request<any>(`${API_V1}/admin/system-keys/${id}/verify`, { method: 'POST' }),
+  deleteSystemKey: (id: number) =>
+    request<any>(`${API_V1}/admin/system-keys/${id}`, { method: 'DELETE' }),
 };
 
 // Public

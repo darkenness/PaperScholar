@@ -67,15 +67,15 @@ export default function RefinePage() {
   return (
     <div className="max-w-6xl mx-auto space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-white">精修增强</h1>
-        <p className="text-gray-400 text-sm mt-1">AI 图片增强、风格迁移</p>
+        <h1 className="text-2xl font-bold text-[var(--text-primary)]">精修增强</h1>
+        <p className="text-[var(--text-muted)] text-sm mt-1">AI 图片增强、风格迁移</p>
       </div>
 
       <div className="flex gap-2">
-        <button onClick={() => { setMode('enhance'); setResult(null); }} className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${mode === 'enhance' ? 'bg-primary-600 text-white' : 'bg-white/5 text-gray-400'}`}>
+        <button onClick={() => { setMode('enhance'); setResult(null); }} className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${mode === 'enhance' ? 'bg-primary-600 text-white' : 'bg-[var(--badge-bg)] text-[var(--text-muted)]'}`}>
           图片增强
         </button>
-        <button onClick={() => { setMode('style'); setResult(null); }} className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${mode === 'style' ? 'bg-primary-600 text-white' : 'bg-white/5 text-gray-400'}`}>
+        <button onClick={() => { setMode('style'); setResult(null); }} className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${mode === 'style' ? 'bg-primary-600 text-white' : 'bg-[var(--badge-bg)] text-[var(--text-muted)]'}`}>
           风格迁移
         </button>
       </div>
@@ -84,20 +84,20 @@ export default function RefinePage() {
         {/* Left: Input */}
         <div className="space-y-4">
           <div className="tech-panel p-5">
-            <h3 className="text-sm font-bold text-white mb-3">{mode === 'enhance' ? '上传图片' : '源图片'}</h3>
-            <label className="block border-2 border-dashed border-white/10 rounded-xl p-6 text-center cursor-pointer hover:border-primary-500/50 transition-colors">
+            <h3 className="text-sm font-bold text-[var(--text-primary)] mb-3">{mode === 'enhance' ? '上传图片' : '源图片'}</h3>
+            <label className="block border-2 border-dashed border-[var(--border-main)] rounded-xl p-6 text-center cursor-pointer hover:border-primary-500/50 transition-colors">
               <input type="file" accept="image/*" onChange={(e) => handleFileChange(e)} className="hidden" />
               {preview ? (
                 <img src={preview} alt="Source" className="max-h-40 mx-auto rounded-lg" />
               ) : (
-                <p className="text-sm text-gray-500">点击上传</p>
+                <p className="text-sm text-[var(--text-muted)]">点击上传</p>
               )}
             </label>
           </div>
 
           {mode === 'enhance' ? (
             <div className="tech-panel p-5">
-              <h3 className="text-sm font-bold text-white mb-3">增强指令</h3>
+              <h3 className="text-sm font-bold text-[var(--text-primary)] mb-3">增强指令</h3>
               <textarea value={instruction} onChange={(e) => setInstruction(e.target.value)} rows={3} className="w-full input-tech text-sm resize-none" placeholder="描述你希望如何改进这张图片..." />
               <button onClick={handleEnhance} disabled={loading || !file} className="w-full btn-primary py-2.5 text-sm mt-3 disabled:opacity-50">
                 {loading ? '增强中...' : '开始增强'}
@@ -105,13 +105,13 @@ export default function RefinePage() {
             </div>
           ) : (
             <div className="tech-panel p-5">
-              <h3 className="text-sm font-bold text-white mb-3">参考风格图片</h3>
-              <label className="block border-2 border-dashed border-white/10 rounded-xl p-6 text-center cursor-pointer hover:border-primary-500/50 transition-colors">
+              <h3 className="text-sm font-bold text-[var(--text-primary)] mb-3">参考风格图片</h3>
+              <label className="block border-2 border-dashed border-[var(--border-main)] rounded-xl p-6 text-center cursor-pointer hover:border-primary-500/50 transition-colors">
                 <input type="file" accept="image/*" onChange={(e) => handleFileChange(e, true)} className="hidden" />
                 {refPreview ? (
                   <img src={refPreview} alt="Reference" className="max-h-32 mx-auto rounded-lg" />
                 ) : (
-                  <p className="text-sm text-gray-500">上传参考风格图片</p>
+                  <p className="text-sm text-[var(--text-muted)]">上传参考风格图片</p>
                 )}
               </label>
               <button onClick={handleStyleTransfer} disabled={loading || !file || !refFile} className="w-full btn-primary py-2.5 text-sm mt-3 disabled:opacity-50">
@@ -125,22 +125,22 @@ export default function RefinePage() {
         <div>
           {result ? (
             <div className="tech-panel p-5 space-y-4">
-              <h3 className="text-sm font-bold text-white">结果</h3>
+              <h3 className="text-sm font-bold text-[var(--text-primary)]">结果</h3>
               {mode === 'enhance' && result.enhanced_url && (
                 <div className="space-y-3">
-                  <div className="bg-white rounded-lg overflow-hidden"><img src={result.enhanced_url} alt="Enhanced" className="w-full" /></div>
-                  <a href={result.enhanced_url} download className="btn-primary text-xs py-2 px-4 inline-block">下载增强图片</a>
+                  <div className="bg-white rounded-lg overflow-hidden"><img src={`${API_BASE}${result.enhanced_url}`} alt="Enhanced" className="w-full" /></div>
+                  <a href={`${API_BASE}${result.enhanced_url}`} download className="btn-primary text-xs py-2 px-4 inline-block">下载增强图片</a>
                 </div>
               )}
               {mode === 'style' && result.result_url && (
                 <div className="space-y-3">
-                  <div className="bg-white rounded-lg overflow-hidden"><img src={result.result_url} alt="Result" className="w-full" /></div>
-                  <a href={result.result_url} download className="btn-primary text-xs py-2 px-4 inline-block">下载结果</a>
+                  <div className="bg-white rounded-lg overflow-hidden"><img src={`${API_BASE}${result.result_url}`} alt="Result" className="w-full" /></div>
+                  <a href={`${API_BASE}${result.result_url}`} download className="btn-primary text-xs py-2 px-4 inline-block">下载结果</a>
                 </div>
               )}
             </div>
           ) : (
-            <div className="tech-panel p-12 text-center text-gray-500">
+            <div className="tech-panel p-12 text-center text-[var(--text-muted)]">
               <svg className="w-16 h-16 mx-auto mb-4 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={0.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" /></svg>
               <p>{mode === 'enhance' ? '上传图片并开始增强' : '上传源图和参考图开始风格迁移'}</p>
             </div>

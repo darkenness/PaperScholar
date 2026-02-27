@@ -62,6 +62,7 @@ class PolishAgent(BaseAgent):
                     {"type": "image_base64", "data": image_b64, "media_type": "image/png"},
                 ],
                 temperature=0.7,
+                system_prompt=suggestion_system,
             )
         except Exception:
             suggestions = await self.chat_lb.chat(
@@ -79,20 +80,37 @@ class PolishAgent(BaseAgent):
             await self.emit(on_event, "stage", {"name": "polish", "status": "done", "progress": 0.95, "detail": "no changes needed"})
             return data
 
-        # Step 2: Generate polished image
+        # Step 2: Generate polished image (pass original image to model)
         await self.emit(on_event, "intermediate", {"type": "text", "stage": "polish", "content": "Generating polished image..."})
 
+        polish_prompt = f"Polish this image based on these suggestions:\n\n{suggestions}\n\nGenerate an improved version:"
+        polished_bytes = None
+
+        # Try image-to-image first (passes original image to model)
         try:
-            polished_bytes = await self.image_lb.generate_image(
-                prompt=f"Polish this image based on these suggestions:\n\n{suggestions}\n\nGenerate an improved version:",
+            polished_bytes = await self.image_lb.generate_image_with_images(
+                prompt=polish_prompt,
+                images=[{"b64": image_b64, "media_type": "image/png"}],
                 aspect_ratio=data.get("aspect_ratio", "1:1"),
             )
-
-            if polished_bytes:
-                data["polished_image_base64"] = base64.b64encode(polished_bytes).decode()
-                await self.emit(on_event, "intermediate", {"type": "image_ready", "stage": "polish"})
+        except (AttributeError, NotImplementedError):
+            pass
         except Exception as e:
-            print(f"[Polish] Image generation failed: {e}")
+            print(f"[Polish] Image-to-image generation failed: {e}")
+
+        # Fallback: text-only image generation (loses original image context)
+        if not polished_bytes:
+            try:
+                polished_bytes = await self.image_lb.generate_image(
+                    prompt=polish_prompt,
+                    aspect_ratio=data.get("aspect_ratio", "1:1"),
+                )
+            except Exception as e:
+                print(f"[Polish] Text-only image generation failed: {e}")
+
+        if polished_bytes:
+            data["polished_image_base64"] = base64.b64encode(polished_bytes).decode()
+            await self.emit(on_event, "intermediate", {"type": "image_ready", "stage": "polish"})
 
         await self.emit(on_event, "stage", {"name": "polish", "status": "done", "progress": 0.95})
         return data

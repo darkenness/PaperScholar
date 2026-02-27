@@ -1,8 +1,9 @@
 'use client';
 
-import { useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { useAuthStore } from '@/stores/auth';
+import { useSidebarStore } from '@/stores/sidebar';
+import ThemeToggle from '@/components/ui/ThemeToggle';
 
 const navItems = [
   { label: '仪表盘', href: '/dashboard', icon: 'M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6' },
@@ -23,6 +24,7 @@ export default function Sidebar({ isOpen, onToggle }: { isOpen?: boolean; onTogg
   const pathname = usePathname();
   const router = useRouter();
   const { user, logout } = useAuthStore();
+  const { collapsed, toggleCollapsed } = useSidebarStore();
   const isAdmin = user?.role === 'admin';
 
   const handleLogout = () => {
@@ -30,89 +32,146 @@ export default function Sidebar({ isOpen, onToggle }: { isOpen?: boolean; onTogg
     router.push('/login');
   };
 
-  const handleNav = (href: string) => {
+  const navTo = (href: string) => {
     router.push(href);
-    if (onToggle) onToggle(); // Close sidebar on mobile after navigation
+    if (onToggle) onToggle();
   };
 
   return (
     <>
       {/* Mobile overlay */}
       {isOpen && (
-        <div className="fixed inset-0 bg-black/50 z-40 lg:hidden" onClick={onToggle} />
+        <div className="fixed inset-0 bg-black/40 z-40 lg:hidden" onClick={onToggle} />
       )}
-      <aside className={`fixed lg:static inset-y-0 left-0 z-50 w-64 tech-sidebar flex flex-col h-full flex-shrink-0 transform transition-transform duration-300 lg:translate-x-0 ${isOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
-      {/* Logo */}
-      <div className="h-16 flex items-center px-6 border-b border-dark-600">
-        <div className="w-8 h-8 bg-primary-600 flex items-center justify-center mr-3">
-          <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-            <path strokeLinecap="square" strokeLinejoin="miter" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" />
-          </svg>
+      <aside
+        className={`fixed lg:static inset-y-0 left-0 z-50 tech-sidebar flex flex-col h-full flex-shrink-0 transform transition-all duration-300 lg:translate-x-0 ${
+          isOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
+        } ${collapsed ? 'lg:w-16 w-64' : 'w-64'}`}
+      >
+        {/* Logo */}
+        <div className="h-14 flex items-center border-b border-[var(--border-main)] px-4 gap-3">
+          <div className="w-8 h-8 bg-primary-600 flex items-center justify-center shrink-0">
+            <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="square" strokeLinejoin="miter" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" />
+            </svg>
+          </div>
+          {!collapsed && (
+            <div className="min-w-0">
+              <h1 className="font-bold text-sm text-[var(--text-primary)] leading-none truncate">PaperScholar</h1>
+              <span className="text-[9px] font-mono text-[var(--text-muted)] tracking-wider uppercase">ACADEMIC AI</span>
+            </div>
+          )}
         </div>
-        <div>
-          <h1 className="font-bold text-base text-white leading-none">PaperScholar</h1>
-          <span className="text-[10px] font-mono text-gray-500 tracking-wider uppercase">ACADEMIC AI</span>
-        </div>
-      </div>
 
-      {/* Nav */}
-      <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
-        <div className="text-[10px] font-bold text-gray-500 uppercase tracking-wider px-3 mb-2 mt-2">功能</div>
-        {navItems.map((item) => (
+        {/* Nav */}
+        <nav className="flex-1 p-2 space-y-0.5 overflow-y-auto overflow-x-hidden">
+          {!collapsed && <div className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider px-3 mb-1.5 mt-1">功能</div>}
+          {navItems.map((item) => (
+            <button
+              key={item.href}
+              onClick={() => navTo(item.href)}
+              title={collapsed ? item.label : undefined}
+              className={`w-full flex items-center gap-2.5 rounded-none border-l-2 border-transparent transition-colors text-sm ${
+                collapsed ? 'justify-center px-0 py-2.5' : 'px-3 py-2'
+              } ${
+                pathname === item.href
+                  ? 'bg-[var(--bg-panel)] border-primary-500 text-primary-500 font-medium'
+                  : 'text-[var(--text-muted)] hover:bg-[var(--bg-panel)] hover:text-[var(--text-primary)]'
+              }`}
+            >
+              <span className={`shrink-0 flex items-center justify-center ${collapsed ? 'w-8 h-8' : 'w-7 h-7'} bg-[var(--bg-inset)] ${
+                pathname === item.href ? 'bg-primary-500/15 text-primary-500' : ''
+              }`}>
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d={item.icon} />
+                </svg>
+              </span>
+              {!collapsed && <span className="text-sm font-medium truncate">{item.label}</span>}
+            </button>
+          ))}
+
+          {isAdmin && (
+            <>
+              {!collapsed && <div className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider px-3 mb-1.5 mt-3">管理</div>}
+              {collapsed && <div className="my-2 mx-2 border-t border-[var(--border-subtle)]" />}
+              {adminItems.map((item) => (
+                <button
+                  key={item.href}
+                  onClick={() => navTo(item.href)}
+                  title={collapsed ? item.label : undefined}
+                  className={`w-full flex items-center gap-2.5 rounded-none border-l-2 border-transparent transition-colors text-sm ${
+                    collapsed ? 'justify-center px-0 py-2.5' : 'px-3 py-2'
+                  } ${
+                    pathname === item.href
+                      ? 'bg-[var(--bg-panel)] border-orange-500 text-orange-400 font-medium'
+                      : 'text-[var(--text-muted)] hover:bg-[var(--bg-panel)] hover:text-[var(--text-primary)]'
+                  }`}
+                >
+                  <span className={`shrink-0 flex items-center justify-center ${collapsed ? 'w-8 h-8' : 'w-7 h-7'} bg-[var(--bg-inset)]`}>
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d={item.icon} />
+                    </svg>
+                  </span>
+                  {!collapsed && <span className="text-sm font-medium truncate">{item.label}</span>}
+                </button>
+              ))}
+            </>
+          )}
+        </nav>
+
+        {/* Bottom: User / Theme / Collapse / Logout */}
+        <div className="border-t border-[var(--border-main)] p-2 space-y-1.5">
+          {/* User info */}
+          {!collapsed ? (
+            <div className="flex items-center gap-2.5 px-2 py-1.5">
+              <div className="w-7 h-7 bg-primary-600 flex items-center justify-center text-[10px] font-bold text-white shrink-0">
+                {user?.username?.charAt(0).toUpperCase() || '?'}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-xs font-medium text-[var(--text-primary)] truncate">{user?.username}</div>
+                <div className="text-[10px] text-[var(--text-muted)] truncate">{user?.email}</div>
+              </div>
+            </div>
+          ) : (
+            <div className="flex justify-center py-1">
+              <div className="w-7 h-7 bg-primary-600 flex items-center justify-center text-[10px] font-bold text-white" title={user?.username}>
+                {user?.username?.charAt(0).toUpperCase() || '?'}
+              </div>
+            </div>
+          )}
+
+          {/* Theme toggle */}
+          {collapsed ? <ThemeToggle compact /> : <ThemeToggle />}
+
+          {/* Collapse toggle (desktop only) */}
           <button
-            key={item.href}
-            onClick={() => router.push(item.href)}
-            className={`nav-item group ${pathname === item.href ? 'active' : ''}`}
+            onClick={toggleCollapsed}
+            className="hidden lg:flex w-full items-center justify-center gap-2 py-1.5 text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors text-xs"
+            title={collapsed ? '展开侧边栏' : '收起侧边栏'}
           >
-            <span className="w-7 h-7 bg-dark-800 flex items-center justify-center group-hover:bg-primary-500/20 group-hover:text-primary-400 transition-colors">
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d={item.icon} />
-              </svg>
-            </span>
-            <span className="text-sm font-medium">{item.label}</span>
+            <svg className={`w-4 h-4 transition-transform ${collapsed ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
+            </svg>
+            {!collapsed && <span className="font-mono text-[10px]">收起</span>}
           </button>
-        ))}
 
-        {isAdmin && (
-          <>
-            <div className="text-[10px] font-bold text-gray-500 uppercase tracking-wider px-3 mb-2 mt-4">管理</div>
-            {adminItems.map((item) => (
-              <button
-                key={item.href}
-                onClick={() => router.push(item.href)}
-                className={`nav-item group ${pathname === item.href ? 'active' : ''}`}
-              >
-                <span className="w-7 h-7 bg-dark-800 flex items-center justify-center group-hover:bg-orange-500/20 group-hover:text-orange-400 transition-colors">
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d={item.icon} />
-                  </svg>
-                </span>
-                <span className="text-sm font-medium">{item.label}</span>
-              </button>
-            ))}
-          </>
-        )}
-      </nav>
-
-      {/* User / Logout */}
-      <div className="p-3 border-t border-dark-600">
-        <div className="flex items-center gap-3 px-3 py-2 mb-2">
-          <div className="w-8 h-8 bg-primary-600 flex items-center justify-center text-xs font-bold text-white">
-            {user?.username?.charAt(0).toUpperCase() || '?'}
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="text-sm font-medium text-white truncate">{user?.username}</div>
-            <div className="text-[10px] text-gray-500 truncate">{user?.email}</div>
-          </div>
+          {/* Logout */}
+          {!collapsed ? (
+            <button onClick={handleLogout} className="w-full flex items-center justify-center gap-2 py-2 rounded-none border border-red-500/20 text-red-400 hover:bg-red-500/10 hover:text-red-300 transition-colors text-xs font-bold font-mono uppercase">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+              </svg>
+              退出登录
+            </button>
+          ) : (
+            <button onClick={handleLogout} title="退出登录" className="w-full flex items-center justify-center py-2 text-red-400 hover:bg-red-500/10 hover:text-red-300 transition-colors">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+              </svg>
+            </button>
+          )}
         </div>
-        <button onClick={handleLogout} className="w-full flex items-center justify-center gap-2 py-2.5 rounded-none border border-red-500/20 text-red-400 hover:bg-red-500/10 hover:text-red-300 transition-colors text-xs font-bold font-mono uppercase">
-          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-          </svg>
-          退出登录
-        </button>
-      </div>
-    </aside>
+      </aside>
     </>
   );
 }

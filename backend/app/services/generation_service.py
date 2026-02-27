@@ -25,7 +25,13 @@ from app.services.usage_service import log_api_usage
 
 
 async def _build_load_balancer(db: AsyncSession, user_id: int, model_type: str) -> Optional[LoadBalancer]:
-    """Build a LoadBalancer from user's verified API key configs."""
+    """Build a LoadBalancer from user's verified API key configs.
+    
+    Fallback priority:
+    1. User's own verified keys (priority >= 0)
+    2. System shared keys (priority == -1) if user has system_api_approved
+    """
+    # 1. Try user's own keys first
     result = await db.execute(
         select(ApiKeyConfig)
         .where(
@@ -33,10 +39,28 @@ async def _build_load_balancer(db: AsyncSession, user_id: int, model_type: str) 
             ApiKeyConfig.model_type == model_type,
             ApiKeyConfig.is_verified == True,
             ApiKeyConfig.is_enabled == True,
+            ApiKeyConfig.priority >= 0,
         )
         .order_by(ApiKeyConfig.priority.desc())
     )
     configs = result.scalars().all()
+
+    # 2. If no user keys, try system shared keys (for approved users)
+    if not configs:
+        from app.models.user import User as _User
+        user_result = await db.execute(select(_User).where(_User.id == user_id))
+        user = user_result.scalar_one_or_none()
+        if user and user.system_api_approved:
+            result = await db.execute(
+                select(ApiKeyConfig)
+                .where(
+                    ApiKeyConfig.priority == -1,
+                    ApiKeyConfig.model_type == model_type,
+                    ApiKeyConfig.is_verified == True,
+                    ApiKeyConfig.is_enabled == True,
+                )
+            )
+            configs = result.scalars().all()
 
     if not configs:
         return None
@@ -51,7 +75,7 @@ async def _build_load_balancer(db: AsyncSession, user_id: int, model_type: str) 
                     api_key=raw_key,
                     base_url=cfg.base_url,
                     model=cfg.model_name or "",
-                    priority=cfg.priority,
+                    priority=max(cfg.priority, 0),
                     api_key_id=cfg.id,
                 )
             )
@@ -99,6 +123,15 @@ async def run_generation_task(task_id: uuid.UUID):
             if not image_lb:
                 # Fall back to chat LB for image if no dedicated image keys
                 image_lb = chat_lb
+                # Warn if the fallback provider doesn't support image generation
+                if chat_lb and chat_lb._states:
+                    provider = chat_lb._states[0].config.provider
+                    if provider == "anthropic":
+                        logger.warning(
+                            "No dedicated image API keys configured. Falling back to Anthropic chat LB, "
+                            "but Anthropic does not support image generation. "
+                            "Diagram generation will fail silently. Please add a Gemini or OpenAI image key."
+                        )
 
             # Record model info
             if chat_lb._states:

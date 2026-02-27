@@ -81,25 +81,25 @@ export default function SettingsPage() {
 
   const renderKeyTable = (keys: any[], type: string) => (
     <div className="tech-panel overflow-hidden">
-      <div className="px-5 py-4 border-b border-white/5 flex justify-between items-center bg-white/5">
-        <h3 className="font-bold text-white text-sm">{type === 'chat' ? 'Chat 模型' : 'Image 模型'} API Keys</h3>
-        <button onClick={() => { setShowForm(true); setFormType(type as any); }} className="text-xs bg-primary-600 hover:bg-primary-500 text-white px-3 py-1.5 rounded-lg">+ 添加</button>
+      <div className="px-5 py-4 border-b border-[var(--border-main)] flex justify-between items-center bg-[var(--badge-bg)]">
+        <h3 className="font-bold text-[var(--text-primary)] text-sm">{type === 'chat' ? 'Chat 模型' : 'Image 模型'} API Keys</h3>
+        <button onClick={() => { setShowForm(true); setFormType(type as any); }} className="text-xs bg-primary-600 hover:bg-primary-500 text-white px-3 py-1.5">+ 添加</button>
       </div>
       {keys.length === 0 ? (
-        <div className="py-8 text-center text-gray-500 text-sm">暂无配置</div>
+        <div className="py-8 text-center text-[var(--text-muted)] text-sm">暂无配置</div>
       ) : (
-        <div className="divide-y divide-white/5">
+        <div className="divide-y divide-[var(--border-subtle)]">
           {keys.map((k: any) => (
-            <div key={k.id} className="px-5 py-3 flex items-center justify-between hover:bg-white/5 transition-colors">
+            <div key={k.id} className="px-5 py-3 flex items-center justify-between hover:bg-[var(--bg-hover)] transition-colors">
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-white">{k.provider}</span>
-                  {k.model_name && <span className="text-xs text-gray-500">· {k.model_name}</span>}
+                  <span className="text-sm font-medium text-[var(--text-primary)]">{k.provider}</span>
+                  {k.model_name && <span className="text-xs text-[var(--text-muted)]">· {k.model_name}</span>}
                   <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${k.is_verified ? 'bg-green-500/20 text-green-400' : 'bg-yellow-500/20 text-yellow-400'}`}>
                     {k.is_verified ? '已验证' : '未验证'}
                   </span>
                 </div>
-                <div className="text-xs text-gray-500 mt-0.5 font-mono">{k.api_key_preview}</div>
+                <div className="text-xs text-[var(--text-muted)] mt-0.5 font-mono">{k.api_key_preview}</div>
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 <button onClick={() => handleVerify(k.id)} className="btn-ghost text-xs py-1 px-2">验证</button>
@@ -117,8 +117,8 @@ export default function SettingsPage() {
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-white">API 配置</h1>
-        <p className="text-gray-400 text-sm mt-1">管理 Chat / Image 模型的 API Key，支持多 Provider 和负载均衡</p>
+        <h1 className="text-2xl font-bold text-[var(--text-primary)]">API 配置</h1>
+        <p className="text-[var(--text-muted)] text-sm mt-1">管理 Chat / Image 模型的 API Key，支持多 Provider 和负载均衡</p>
       </div>
 
       {/* API Key Tables */}
@@ -129,11 +129,11 @@ export default function SettingsPage() {
 
       {/* Add Form Modal */}
       {showForm && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={() => setShowForm(false)}>
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setShowForm(false)}>
           <div className="tech-panel p-6 w-full max-w-md space-y-4" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-lg font-bold text-white">添加 API Key ({formType === 'chat' ? 'Chat模型' : 'Image模型'})</h3>
+            <h3 className="text-lg font-bold text-[var(--text-primary)]">添加 API Key ({formType === 'chat' ? 'Chat模型' : 'Image模型'})</h3>
             <div>
-              <label className="text-xs text-gray-400 mb-1 block">Provider</label>
+              <label className="text-xs text-[var(--text-muted)] mb-1 block">Provider</label>
               <select value={provider} onChange={(e) => setProvider(e.target.value)} className="w-full input-tech text-sm py-2">
                 <option value="openai_compat">OpenAI 兼容 (OpenRouter/自定义)</option>
                 <option value="gemini">Google Gemini</option>
@@ -141,15 +141,15 @@ export default function SettingsPage() {
               </select>
             </div>
             <div>
-              <label className="text-xs text-gray-400 mb-1 block">Base URL (可选)</label>
+              <label className="text-xs text-[var(--text-muted)] mb-1 block">Base URL (可选)</label>
               <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://openrouter.ai/api/v1" className="w-full input-tech text-sm" />
             </div>
             <div>
-              <label className="text-xs text-gray-400 mb-1 block">API Key *</label>
+              <label className="text-xs text-[var(--text-muted)] mb-1 block">API Key *</label>
               <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-..." type="password" className="w-full input-tech text-sm" />
             </div>
             <div>
-              <label className="text-xs text-gray-400 mb-1 block">模型名称 (可选)</label>
+              <label className="text-xs text-[var(--text-muted)] mb-1 block">模型名称 (可选)</label>
               <input value={modelName} onChange={(e) => setModelName(e.target.value)} placeholder="gemini-2.5-pro" className="w-full input-tech text-sm" />
             </div>
             {formError && <div className="text-red-400 text-xs">{formError}</div>}
@@ -164,21 +164,21 @@ export default function SettingsPage() {
       {/* System API Application */}
       {!user?.system_api_approved && (
         <div className="tech-panel p-6">
-          <h3 className="text-lg font-bold text-white mb-3">申请系统 API</h3>
-          <p className="text-sm text-gray-400 mb-4">如果您没有自己的 API Key，可以申请使用系统提供的 API（需管理员审核）</p>
+          <h3 className="text-lg font-bold text-[var(--text-primary)] mb-3">申请系统 API</h3>
+          <p className="text-sm text-[var(--text-muted)] mb-4">如果您没有自己的 API Key，可以申请使用系统提供的 API（需管理员审核）</p>
           <textarea value={appReason} onChange={(e) => setAppReason(e.target.value)} placeholder="请说明您的使用场景和预计用量（至少10字）..." rows={3} className="w-full input-tech text-sm mb-3" />
           <button onClick={handleApply} disabled={appLoading || appReason.length < 10} className="btn-primary py-2 px-4 text-sm disabled:opacity-50">
             {appLoading ? '提交中...' : '提交申请'}
           </button>
           {myApps.length > 0 && (
             <div className="mt-4 space-y-2">
-              <h4 className="text-xs font-bold text-gray-400">我的申请记录</h4>
+              <h4 className="text-xs font-bold text-[var(--text-muted)]">我的申请记录</h4>
               {myApps.map((a: any) => (
                 <div key={a.id} className="flex items-center gap-3 text-xs">
                   <span className={`px-2 py-0.5 rounded font-bold ${a.status === 'approved' ? 'bg-green-500/20 text-green-400' : a.status === 'rejected' ? 'bg-red-500/20 text-red-400' : 'bg-yellow-500/20 text-yellow-400'}`}>
                     {a.status === 'approved' ? '已批准' : a.status === 'rejected' ? '已拒绝' : '审核中'}
                   </span>
-                  <span className="text-gray-500">{a.reason?.substring(0, 50)}</span>
+                  <span className="text-[var(--text-muted)]">{a.reason?.substring(0, 50)}</span>
                 </div>
               ))}
             </div>

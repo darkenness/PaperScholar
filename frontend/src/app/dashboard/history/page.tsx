@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react';
 import { generateApi } from '@/lib/api';
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
+
 export default function HistoryPage() {
   const [items, setItems] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
@@ -29,12 +31,12 @@ export default function HistoryPage() {
     <div className="max-w-6xl mx-auto space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white">历史记录</h1>
-          <p className="text-gray-400 text-sm mt-1">共 {total} 条生成记录</p>
+          <h1 className="text-2xl font-bold text-[var(--text-primary)]">历史记录</h1>
+          <p className="text-[var(--text-muted)] text-sm mt-1">共 {total} 条生成记录</p>
         </div>
         <div className="flex gap-2">
           {['', 'diagram', 'plot'].map((f) => (
-            <button key={f} onClick={() => setFilter(f)} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${filter === f ? 'bg-primary-600 text-white' : 'bg-white/5 text-gray-400 hover:text-white'}`}>
+            <button key={f} onClick={() => setFilter(f)} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${filter === f ? 'bg-primary-600 text-white' : 'bg-[var(--badge-bg)] text-[var(--text-muted)] hover:text-[var(--text-primary)]'}`}>
               {f === '' ? '全部' : f === 'diagram' ? '示意图' : '统计图'}
             </button>
           ))}
@@ -45,18 +47,18 @@ export default function HistoryPage() {
         <div className="flex justify-center py-20"><div className="w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" /></div>
       ) : items.length === 0 ? (
         <div className="tech-panel p-12 text-center">
-          <p className="text-gray-500">暂无生成记录</p>
+          <p className="text-[var(--text-muted)]">暂无生成记录</p>
         </div>
       ) : (
         <>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
             {items.map((item: any) => (
-              <div key={item.task_id} className="tech-panel overflow-hidden group hover:border-white/20 transition-all">
-                <div className="aspect-square bg-dark-700 relative overflow-hidden">
+              <div key={item.task_id} className="tech-panel overflow-hidden group hover:border-primary-500/50 transition-all">
+                <div className="aspect-square bg-[var(--bg-inset)] relative overflow-hidden">
                   {item.thumbnail_url || item.image_url ? (
-                    <img src={item.thumbnail_url || item.image_url} alt="" className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
+                    <img src={`${API_BASE}${item.thumbnail_url || item.image_url}`} alt="" className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
                   ) : (
-                    <div className="w-full h-full flex items-center justify-center text-gray-600">
+                    <div className="w-full h-full flex items-center justify-center text-[var(--text-faint)]">
                       <svg className="w-10 h-10" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
                         <path strokeLinecap="round" strokeLinejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                       </svg>
@@ -75,10 +77,10 @@ export default function HistoryPage() {
                 </div>
                 <div className="p-3">
                   <div className="flex items-center gap-2 mb-1">
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-gray-400">{item.task_type}</span>
-                    <span className="text-[10px] text-gray-500">{item.pipeline_mode}</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--badge-bg)] text-[var(--text-muted)]">{item.task_type}</span>
+                    <span className="text-[10px] text-[var(--text-muted)]">{item.pipeline_mode}</span>
                   </div>
-                  <div className="text-[10px] text-gray-500 font-mono">{new Date(item.created_at).toLocaleString()}</div>
+                  <div className="text-[10px] text-[var(--text-muted)] font-mono">{new Date(item.created_at).toLocaleString()}</div>
                 </div>
               </div>
             ))}
@@ -87,7 +89,7 @@ export default function HistoryPage() {
           {totalPages > 1 && (
             <div className="flex justify-center gap-2 pt-4">
               <button onClick={() => load(page - 1)} disabled={page <= 1} className="btn-ghost text-xs py-1.5 px-3 disabled:opacity-30">上一页</button>
-              <span className="text-sm text-gray-400 flex items-center px-3">{page} / {totalPages}</span>
+              <span className="text-sm text-[var(--text-muted)] flex items-center px-3">{page} / {totalPages}</span>
               <button onClick={() => load(page + 1)} disabled={page >= totalPages} className="btn-ghost text-xs py-1.5 px-3 disabled:opacity-30">下一页</button>
             </div>
           )}
