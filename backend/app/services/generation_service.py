@@ -21,6 +21,7 @@ from app.llm.load_balancer import ClientConfig, LoadBalancer
 from app.models.api_key import ApiKeyConfig
 from app.models.generation import GenerationResult, GenerationTask, PipelineEvent
 from app.models.user import User
+from app.services.usage_service import log_api_usage
 
 
 async def _build_load_balancer(db: AsyncSession, user_id: int, model_type: str) -> Optional[LoadBalancer]:
@@ -51,6 +52,7 @@ async def _build_load_balancer(db: AsyncSession, user_id: int, model_type: str) 
                     base_url=cfg.base_url,
                     model=cfg.model_name or "",
                     priority=cfg.priority,
+                    api_key_id=cfg.id,
                 )
             )
         except Exception:
@@ -192,9 +194,32 @@ async def run_generation_task(task_id: uuid.UUID):
 
             await _save_event(db, task_id, "done", {"status": "completed"})
 
+            # Log API usage for the completed task
+            elapsed_ms = int((datetime.now(timezone.utc) - task.started_at).total_seconds() * 1000) if task.started_at else None
+            await log_api_usage(
+                user_id=task.user_id,
+                task_id=str(task_id),
+                provider=task.chat_provider,
+                model=task.chat_model,
+                success=True,
+                latency_ms=elapsed_ms,
+            )
+
         except Exception as e:
             task.status = "failed"
             task.error_message = str(e)
             task.completed_at = datetime.now(timezone.utc)
             await db.commit()
             await _save_event(db, task_id, "error", {"message": str(e)})
+
+            # Log failed API usage
+            elapsed_ms = int((datetime.now(timezone.utc) - task.started_at).total_seconds() * 1000) if task.started_at else None
+            await log_api_usage(
+                user_id=task.user_id,
+                task_id=str(task_id),
+                provider=task.chat_provider,
+                model=task.chat_model,
+                success=False,
+                error_message=str(e),
+                latency_ms=elapsed_ms,
+            )

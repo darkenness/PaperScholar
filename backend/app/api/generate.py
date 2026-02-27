@@ -248,6 +248,60 @@ async def cancel_task(
     return {"message": "任务已取消"}
 
 
+@router.get("/{task_id}/download")
+async def download_task_results(
+    task_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Download all result images for a task as a ZIP file."""
+    import io
+    import zipfile
+    from fastapi.responses import StreamingResponse
+    from app.config import settings
+
+    result = await db.execute(
+        select(GenerationTask).where(
+            GenerationTask.id == task_id, GenerationTask.user_id == user.id
+        )
+    )
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if task.status != "completed":
+        raise HTTPException(status_code=400, detail="任务未完成，无法下载")
+
+    results_result = await db.execute(
+        select(GenerationResult)
+        .where(GenerationResult.task_id == task_id)
+        .order_by(GenerationResult.candidate_index)
+    )
+    results = results_result.scalars().all()
+
+    if not results:
+        raise HTTPException(status_code=404, detail="无可下载的结果")
+
+    import os
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for r in results:
+            if r.image_path:
+                abs_path = os.path.join(settings.UPLOAD_DIR, r.image_path)
+                if os.path.exists(abs_path):
+                    zf.write(abs_path, f"candidate_{r.candidate_index}.png")
+            if r.svg_path:
+                abs_path = os.path.join(settings.UPLOAD_DIR, r.svg_path)
+                if os.path.exists(abs_path):
+                    zf.write(abs_path, f"candidate_{r.candidate_index}.svg")
+
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=task_{str(task_id)[:8]}_results.zip"},
+    )
+
+
 @router.post("/results/{result_id}/favorite")
 async def toggle_favorite(
     result_id: int,

@@ -43,6 +43,10 @@ app = FastAPI(
 from app.core.middleware import GlobalExceptionMiddleware
 app.add_middleware(GlobalExceptionMiddleware)
 
+# Rate limiting
+from app.core.rate_limit import RateLimitMiddleware
+app.add_middleware(RateLimitMiddleware)
+
 # CORS
 app.add_middleware(
     CORSMiddleware,

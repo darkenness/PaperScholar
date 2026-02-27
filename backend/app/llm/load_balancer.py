@@ -16,6 +16,7 @@ class ClientConfig:
     base_url: Optional[str] = None
     model: str = ""
     priority: int = 0
+    api_key_id: Optional[int] = None  # DB id for usage logging
 
 
 @dataclass
@@ -29,7 +30,8 @@ class ClientState:
 class LoadBalancer:
     """Round-robin load balancer with automatic failover for multiple LLM clients."""
 
-    def __init__(self, configs: list[ClientConfig]):
+    def __init__(self, configs: list[ClientConfig], usage_callback=None):
+        self._usage_callback = usage_callback  # async fn(provider, model, api_key_id, success, error_msg, latency_ms)
         self._states: list[ClientState] = []
         self._index: int = 0
         self._lock = asyncio.Lock()

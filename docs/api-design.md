@@ -90,6 +90,26 @@
 }
 ```
 
+### PUT `/auth/me` — 修改个人信息 🔒
+
+```json
+// Request (部分更新)
+{
+  "username": "new_name",
+  "password": "new_password"
+}
+
+// Response 200
+{
+  "id": 1,
+  "username": "new_name",
+  "email": "...",
+  "role": "user",
+  "system_api_approved": false,
+  "created_at": "..."
+}
+```
+
 ---
 
 ## 3. API Key 管理 `/api/v1/api-keys` 🔒
@@ -308,6 +328,10 @@ data: {"task_id": "a1b2c3d4-...", "status": "completed", "num_results": 4}
 
 ### POST `/generate/{task_id}/cancel` — 取消任务
 
+### GET `/generate/{task_id}/download` — 下载任务所有结果 (ZIP) 🔒
+
+> 返回包含所有候选图的 ZIP 压缩包。任务必须为 `completed` 状态。
+
 ### POST `/generate/results/{result_id}/favorite` — 收藏/取消收藏
 
 ---
@@ -456,13 +480,13 @@ data: {"task_id": "a1b2c3d4-...", "status": "completed", "num_results": 4}
 >
 > 例如: `GET /uploads/results/{task_id}/candidate_0.png`
 >
-> **待实现**: 批量ZIP下载接口 `GET /files/download/{task_id}`
+> 批量ZIP下载通过 `GET /generate/{task_id}/download` 接口提供。
 
 ---
 
-## 11. 速率限制（待实现）
+## 11. 速率限制
 
-> 当前未实现速率限制中间件。计划目标:
+> 已实现基于内存的滑动窗口速率限制中间件 (`RateLimitMiddleware`)。生产环境建议替换为Redis后端。
 
 | 接口类别 | 限制 |
 |---------|------|

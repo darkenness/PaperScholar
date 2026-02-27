@@ -16,6 +16,7 @@ from app.schemas.auth import (
     RegisterRequest,
     SendCodeRequest,
     TokenResponse,
+    UpdateProfileRequest,
     UserResponse,
 )
 from app.api.deps import get_current_user
@@ -130,6 +131,36 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
 
 @router.get("/me", response_model=UserResponse)
 async def get_me(user: User = Depends(get_current_user)):
+    return UserResponse(
+        id=user.id,
+        username=user.username,
+        email=user.email,
+        role=user.role,
+        is_active=user.is_active,
+        system_api_approved=user.system_api_approved,
+        created_at=user.created_at.isoformat(),
+    )
+
+
+@router.put("/me", response_model=UserResponse)
+async def update_me(
+    req: UpdateProfileRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if req.username is not None:
+        existing = await db.execute(
+            select(User).where(User.username == req.username, User.id != user.id)
+        )
+        if existing.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="用户名已被使用")
+        user.username = req.username
+
+    if req.password is not None:
+        user.password_hash = hash_password(req.password)
+
+    await db.commit()
+    await db.refresh(user)
     return UserResponse(
         id=user.id,
         username=user.username,
