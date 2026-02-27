@@ -1,0 +1,72 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+@layer base {
+  body {
+    @apply bg-dark-900 text-gray-300 antialiased;
+    font-family: 'Inter', system-ui, sans-serif;
+    background-image: 
+      radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+      linear-gradient(to right, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+    background-size: 24px 24px, 120px 120px, 120px 120px;
+  }
+}
+
+@layer components {
+  /* Industrial, structural panels instead of glassmorphism */
+  .tech-panel {
+    @apply bg-dark-800 border border-dark-600 rounded-none shadow-none;
+  }
+  
+  .tech-sidebar {
+    @apply bg-dark-900 border-r border-dark-600;
+  }
+  
+  /* Utilitarian inputs */
+  .input-tech {
+    @apply bg-dark-900 border border-dark-600 text-gray-200 rounded-none px-4 py-2.5
+           font-mono text-sm transition-colors duration-200 placeholder-gray-600
+           focus:border-primary-500 focus:ring-0 focus:outline-none focus:bg-dark-800;
+  }
+  
+  /* Functional, stark buttons */
+  .btn-primary {
+    @apply bg-primary-600 hover:bg-primary-500 text-white font-medium rounded-none
+           border border-primary-500 hover:border-primary-400
+           transition-colors active:bg-primary-700 px-6 py-2.5 text-sm uppercase tracking-wider;
+  }
+  
+  .btn-ghost {
+    @apply border border-dark-600 text-gray-400 hover:text-gray-200 hover:border-dark-600 hover:bg-dark-800
+           rounded-none px-4 py-2 transition-colors text-sm;
+  }
+  
+  /* Navigation */
+  .nav-item {
+    @apply w-full flex items-center gap-3 px-4 py-3 rounded-none border-l-2 border-transparent
+           text-gray-400 hover:bg-dark-800 hover:text-gray-200 transition-colors text-sm;
+  }
+  
+  .nav-item.active {
+    @apply bg-dark-800 border-primary-500 text-primary-400 font-medium;
+  }
+
+  /* Decorative tech elements */
+  .tech-corner-tl {
+    @apply relative;
+  }
+  .tech-corner-tl::before {
+    content: '';
+    @apply absolute -top-[1px] -left-[1px] w-2 h-2 border-t-2 border-l-2 border-primary-500 z-10;
+  }
+}
+
+/* Utilitarian Scrollbar */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { @apply bg-dark-900 border-l border-dark-600; }
+::-webkit-scrollbar-thumb { @apply bg-dark-600 rounded-none; }
+::-webkit-scrollbar-thumb:hover { @apply bg-gray-500; }

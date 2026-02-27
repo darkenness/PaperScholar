@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+*.egg
+
+# Environment
+.env
+backend/.env
+
+# Uploads & generated files
+backend/uploads/
+uploads/
+
+# Node
+node_modules/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker/data/
+
+# Alembic
+backend/alembic/versions/*.py
+!backend/alembic/versions/.gitkeep
+
+# Data (large datasets)
+backend/data/PaperBananaBench/
+
+# Reference projects (cloned separately)
+AutoFigure/
+autofigure-edit/
+PaperBanana/
+VoAPI/
+Nano-Banana/
+
+# Misc
+*.log
