@@ -15,11 +15,14 @@ const config: Config = {
           600: '#2a2a2a', // Borders and dividers
         },
         primary: {
+          300: '#93bbfd',
           400: '#60a5fa',
           500: '#2563eb', // Academic/Technical Blue
           600: '#1d4ed8',
+          700: '#1e40af',
         },
         accent: {
+          400: '#fbbf24',
           500: '#f59e0b', // Amber for technical warnings/highlights
         }
       },
