@@ -25,8 +25,10 @@ class GenerationTask(Base):
 
     chat_provider: Mapped[str | None] = mapped_column(String(50), nullable=True)
     chat_model: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    chat_key_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     image_provider: Mapped[str | None] = mapped_column(String(50), nullable=True)
     image_model: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    image_key_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
     progress: Mapped[float] = mapped_column(Float, default=0.0)

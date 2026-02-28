@@ -83,6 +83,26 @@ export const applicationsApi = {
   my: () => request<any[]>(`${API_V1}/api-applications/my`),
 };
 
+// Model selection types
+export interface ModelProviderInfo {
+  key_id: number;
+  provider: string;
+  base_url: string | null;
+  api_key_preview: string;
+  is_system: boolean;
+  priority: number;
+}
+
+export interface ModelGroupInfo {
+  model_name: string;
+  providers: ModelProviderInfo[];
+}
+
+export interface AvailableModelsResponse {
+  chat_models: ModelGroupInfo[];
+  image_models: ModelGroupInfo[];
+}
+
 // Generation
 export const generateApi = {
   create: (data: any) =>
@@ -90,6 +110,8 @@ export const generateApi = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  getAvailableModels: () =>
+    request<AvailableModelsResponse>(`${API_V1}/generate/available-models`),
   getTask: (taskId: string) => request<any>(`${API_V1}/generate/${taskId}`),
   getHistory: (page = 1, pageSize = 20, taskType?: string) => {
     let url = `${API_V1}/generate/history/list?page=${page}&page_size=${pageSize}`;

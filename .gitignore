@@ -35,8 +35,7 @@ Thumbs.db
 # Docker
 docker/data/
 
-# Alembic
-backend/alembic/versions/*.py
+# Alembic (track migration files for DB upgrades)
 !backend/alembic/versions/.gitkeep
 
 # Data (large datasets)

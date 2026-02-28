@@ -5,6 +5,7 @@ import base64
 import logging
 import os
 import uuid
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -16,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.pipeline import PipelineEngine
 from app.config import settings
 from app.core.database import AsyncSessionLocal
-from app.core.security import decrypt_api_key
+from app.core.security import decrypt_api_key, mask_api_key
 from app.llm.load_balancer import ClientConfig, LoadBalancer
 from app.models.api_key import ApiKeyConfig
 from app.models.generation import GenerationResult, GenerationTask, PipelineEvent
@@ -24,14 +25,11 @@ from app.models.user import User
 from app.services.usage_service import log_api_usage
 
 
-async def _build_load_balancer(db: AsyncSession, user_id: int, model_type: str) -> Optional[LoadBalancer]:
-    """Build a LoadBalancer from user's verified API key configs.
-    
-    Fallback priority:
-    1. User's own verified keys (priority >= 0)
-    2. System shared keys (priority == -1) if user has system_api_approved
-    """
-    # 1. Try user's own keys first
+async def _get_available_configs(db: AsyncSession, user_id: int, model_type: str) -> list[tuple[ApiKeyConfig, bool]]:
+    """Get all available API key configs for a user (own + system), returns list of (config, is_system)."""
+    results: list[tuple[ApiKeyConfig, bool]] = []
+
+    # 1. User's own verified keys
     result = await db.execute(
         select(ApiKeyConfig)
         .where(
@@ -43,30 +41,98 @@ async def _build_load_balancer(db: AsyncSession, user_id: int, model_type: str) 
         )
         .order_by(ApiKeyConfig.priority.desc())
     )
-    configs = result.scalars().all()
+    for cfg in result.scalars().all():
+        results.append((cfg, False))
 
-    # 2. If no user keys, try system shared keys (for approved users)
-    if not configs:
-        from app.models.user import User as _User
-        user_result = await db.execute(select(_User).where(_User.id == user_id))
-        user = user_result.scalar_one_or_none()
-        if user and user.system_api_approved:
-            result = await db.execute(
-                select(ApiKeyConfig)
-                .where(
-                    ApiKeyConfig.priority == -1,
-                    ApiKeyConfig.model_type == model_type,
-                    ApiKeyConfig.is_verified == True,
-                    ApiKeyConfig.is_enabled == True,
-                )
+    # 2. System shared keys (for approved users)
+    user_result = await db.execute(select(User).where(User.id == user_id))
+    user = user_result.scalar_one_or_none()
+    if user and user.system_api_approved:
+        result = await db.execute(
+            select(ApiKeyConfig)
+            .where(
+                ApiKeyConfig.priority == -1,
+                ApiKeyConfig.model_type == model_type,
+                ApiKeyConfig.is_verified == True,
+                ApiKeyConfig.is_enabled == True,
             )
-            configs = result.scalars().all()
+        )
+        for cfg in result.scalars().all():
+            results.append((cfg, True))
 
-    if not configs:
+    return results
+
+
+async def get_available_models(db: AsyncSession, user_id: int) -> dict:
+    """Return available chat and image models grouped by model_name, with provider details."""
+    output = {"chat_models": [], "image_models": []}
+
+    for model_type in ("chat", "image"):
+        configs = await _get_available_configs(db, user_id, model_type)
+        groups: dict[str, list[dict]] = defaultdict(list)
+
+        for cfg, is_system in configs:
+            model_name = cfg.model_name or f"{cfg.provider}_default"
+            try:
+                raw_key = decrypt_api_key(cfg.api_key_encrypted)
+                preview = mask_api_key(raw_key)
+            except Exception:
+                preview = "***"
+
+            groups[model_name].append({
+                "key_id": cfg.id,
+                "provider": cfg.provider,
+                "base_url": cfg.base_url,
+                "api_key_preview": preview,
+                "is_system": is_system,
+                "priority": cfg.priority,
+            })
+
+        key = f"{model_type}_models"
+        for name, providers in groups.items():
+            output[key].append({"model_name": name, "providers": providers})
+
+    return output
+
+
+async def _build_load_balancer(
+    db: AsyncSession,
+    user_id: int,
+    model_type: str,
+    key_id: Optional[int] = None,
+    model_name: Optional[str] = None,
+) -> Optional[LoadBalancer]:
+    """Build a LoadBalancer from user's verified API key configs.
+    
+    Selection logic (VoAPI-style):
+    - key_id specified: use only that specific key config
+    - model_name specified: use all keys matching that model_name
+    - neither specified: use all available keys (original behavior)
+    
+    Fallback priority:
+    1. User's own verified keys (priority >= 0)
+    2. System shared keys (priority == -1) if user has system_api_approved
+    """
+    all_configs = await _get_available_configs(db, user_id, model_type)
+
+    if not all_configs:
+        return None
+
+    # Apply filters
+    if key_id is not None:
+        all_configs = [(cfg, sys) for cfg, sys in all_configs if cfg.id == key_id]
+    elif model_name is not None:
+        all_configs = [(cfg, sys) for cfg, sys in all_configs if cfg.model_name == model_name]
+    else:
+        # Default: prefer user keys; fall back to system keys only if no user keys
+        user_configs = [(cfg, sys) for cfg, sys in all_configs if not sys]
+        all_configs = user_configs if user_configs else all_configs
+
+    if not all_configs:
         return None
 
     client_configs = []
-    for cfg in configs:
+    for cfg, _is_system in all_configs:
         try:
             raw_key = decrypt_api_key(cfg.api_key_encrypted)
             client_configs.append(
@@ -114,9 +180,17 @@ async def run_generation_task(task_id: uuid.UUID):
         await db.commit()
 
         try:
-            # Build load balancers from user's API keys
-            chat_lb = await _build_load_balancer(db, task.user_id, "chat")
-            image_lb = await _build_load_balancer(db, task.user_id, "image")
+            # Build load balancers from user's API keys (with optional model selection)
+            chat_lb = await _build_load_balancer(
+                db, task.user_id, "chat",
+                key_id=task.chat_key_id,
+                model_name=task.chat_model,
+            )
+            image_lb = await _build_load_balancer(
+                db, task.user_id, "image",
+                key_id=task.image_key_id,
+                model_name=task.image_model,
+            )
 
             if not chat_lb:
                 raise RuntimeError("没有可用的 Chat 模型 API Key，请先在 API 配置中添加并验证")

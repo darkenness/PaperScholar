@@ -11,6 +11,7 @@ from app.core.database import get_db
 from app.models.generation import GenerationResult, GenerationTask, PipelineEvent
 from app.models.user import User
 from app.schemas.generation import (
+    AvailableModelsResponse,
     FavoriteRequest,
     GenerateRequest,
     ResultResponse,
@@ -23,6 +24,17 @@ router = APIRouter(prefix="/generate", tags=["图表生成"])
 
 # Track background tasks
 _background_tasks: dict[str, asyncio.Task] = {}
+
+
+@router.get("/available-models", response_model=AvailableModelsResponse)
+async def get_available_models(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return available chat and image models for the current user, grouped by model name."""
+    from app.services.generation_service import get_available_models
+    data = await get_available_models(db, user.id)
+    return AvailableModelsResponse(**data)
 
 
 @router.post("", response_model=TaskCreateResponse, status_code=status.HTTP_201_CREATED)
@@ -41,6 +53,10 @@ async def create_generation_task(
         num_candidates=req.num_candidates,
         aspect_ratio=req.aspect_ratio,
         max_critic_rounds=req.max_critic_rounds,
+        chat_model=req.chat_model_name,
+        chat_key_id=req.chat_key_id,
+        image_model=req.image_model_name,
+        image_key_id=req.image_key_id,
         status="pending",
     )
     db.add(task)

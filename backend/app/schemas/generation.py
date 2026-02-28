@@ -15,6 +15,10 @@ class GenerateRequest(BaseModel):
     aspect_ratio: Optional[str] = "1:1"
     max_critic_rounds: int = Field(default=3, ge=1, le=5)
     reference_image_ids: Optional[list[int]] = None
+    chat_model_name: Optional[str] = Field(default=None, description="指定 chat 模型名称")
+    chat_key_id: Optional[int] = Field(default=None, description="指定 chat 供应商（API Key 配置 ID）")
+    image_model_name: Optional[str] = Field(default=None, description="指定 image 模型名称")
+    image_key_id: Optional[int] = Field(default=None, description="指定 image 供应商（API Key 配置 ID）")
 
 
 class TaskCreateResponse(BaseModel):
@@ -59,3 +63,24 @@ class HistoryResponse(BaseModel):
 
 class FavoriteRequest(BaseModel):
     is_favorited: bool
+
+
+class ModelProviderInfo(BaseModel):
+    key_id: int
+    provider: str
+    base_url: Optional[str]
+    api_key_preview: str
+    is_system: bool
+    priority: int
+
+    model_config = {"from_attributes": True}
+
+
+class ModelGroupInfo(BaseModel):
+    model_name: str
+    providers: list[ModelProviderInfo]
+
+
+class AvailableModelsResponse(BaseModel):
+    chat_models: list[ModelGroupInfo]
+    image_models: list[ModelGroupInfo]
