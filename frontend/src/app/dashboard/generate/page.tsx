@@ -376,9 +376,18 @@ export default function GeneratePage() {
               </div>
 
               {/* Model selection */}
-              {availableModels && (availableModels.chat_models.length > 0 || availableModels.image_models.length > 0) && (
+              {availableModels && (
                 <div className="space-y-3 pt-2 border-t border-[var(--border-subtle)]">
                   <label className="text-[11px] font-bold text-[var(--text-muted)] block uppercase tracking-wider">模型选择</label>
+
+                  {availableModels.chat_models.length === 0 && availableModels.image_models.length === 0 && (
+                    <div className="py-3 px-3 bg-yellow-500/10 border border-yellow-500/20">
+                      <p className="text-xs text-yellow-400">暂无可用模型</p>
+                      <p className="text-[10px] text-[var(--text-muted)] mt-1">
+                        请先在 <a href="/dashboard/settings" className="text-primary-400 underline">API 配置</a> 中添加并验证 API Key，或申请使用系统 API
+                      </p>
+                    </div>
+                  )}
 
                   {/* Chat Model */}
                   {availableModels.chat_models.length > 0 && (
@@ -404,7 +413,6 @@ export default function GeneratePage() {
                           </option>
                         ))}
                       </select>
-                      {/* Provider sub-selection */}
                       {selectedChatGroup && selectedChatGroup.providers.length > 1 && (
                         <div className="mt-1.5">
                           <label className="text-[11px] text-[var(--text-faint)] mb-1 block">选择供应商</label>
@@ -449,7 +457,6 @@ export default function GeneratePage() {
                           </option>
                         ))}
                       </select>
-                      {/* Provider sub-selection */}
                       {selectedImageGroup && selectedImageGroup.providers.length > 1 && (
                         <div className="mt-1.5">
                           <label className="text-[11px] text-[var(--text-faint)] mb-1 block">选择供应商</label>
@@ -468,10 +475,6 @@ export default function GeneratePage() {
                         </div>
                       )}
                     </div>
-                  )}
-
-                  {availableModels.chat_models.length === 0 && availableModels.image_models.length === 0 && (
-                    <p className="text-[10px] text-yellow-400">暂无可用模型，请先在设置中配置 API Key</p>
                   )}
                 </div>
               )}
