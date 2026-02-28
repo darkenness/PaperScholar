@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
+from app.config import settings
 from app.core.database import get_db
 from app.models.generation import GenerationResult, GenerationTask, PipelineEvent
 from app.models.user import User
@@ -65,7 +66,12 @@ async def create_generation_task(
 
     # Launch pipeline execution as background task
     from app.services.generation_service import run_generation_task
-    bg_task = asyncio.create_task(run_generation_task(task.id))
+    extra_params = {
+        "retriever_content_limit": req.retriever_content_limit,
+        "retriever_top_k": req.retriever_top_k,
+        "retriever_pool_size": req.retriever_pool_size,
+    }
+    bg_task = asyncio.create_task(run_generation_task(task.id, extra_params=extra_params))
     _background_tasks[str(task.id)] = bg_task
 
     # Cleanup finished tasks
@@ -231,14 +237,56 @@ async def get_history(
             "pipeline_mode": task.pipeline_mode,
             "status": task.status,
             "progress": task.progress,
+            "content": (task.content or "")[:200],
+            "visual_intent": (task.visual_intent or "")[:200],
+            "chat_model": task.chat_model,
+            "image_model": task.image_model,
+            "error_message": task.error_message,
             "created_at": task.created_at.isoformat(),
+            "completed_at": task.completed_at.isoformat() if task.completed_at else None,
             "image_url": f"/uploads/{first_result.image_path}" if first_result and first_result.image_path else None,
             "thumbnail_url": f"/uploads/{first_result.thumbnail_path}" if first_result and first_result.thumbnail_path else None,
             "quality_score": first_result.quality_score if first_result else None,
             "is_favorited": first_result.is_favorited if first_result else False,
+            "result_id": first_result.id if first_result else None,
         })
 
     return {"total": total, "page": page, "page_size": page_size, "items": items}
+
+
+@router.delete("/{task_id}")
+async def delete_task(
+    task_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a generation task and its results."""
+    from sqlalchemy.orm import selectinload
+    import os, shutil
+
+    result = await db.execute(
+        select(GenerationTask)
+        .options(selectinload(GenerationTask.results))
+        .where(GenerationTask.id == task_id, GenerationTask.user_id == user.id)
+    )
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if task.status == "running":
+        raise HTTPException(status_code=400, detail="运行中的任务不能删除，请先取消")
+
+    # Delete files on disk
+    for r in task.results:
+        if r.image_path:
+            abs_path = os.path.join(settings.UPLOAD_DIR, r.image_path)
+            parent = os.path.dirname(abs_path)
+            if os.path.isdir(parent):
+                shutil.rmtree(parent, ignore_errors=True)
+                break
+
+    await db.delete(task)
+    await db.commit()
+    return {"message": "任务已删除"}
 
 
 @router.post("/{task_id}/cancel")
@@ -267,6 +315,7 @@ async def cancel_task(
 @router.get("/{task_id}/download")
 async def download_task_results(
     task_id: uuid.UUID,
+    token: str = Query(None, description="JWT token (for browser download, since window.open can't send headers)"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -275,6 +324,51 @@ async def download_task_results(
     import zipfile
     from fastapi.responses import StreamingResponse
     from app.config import settings
+
+    # If token is provided via query param, override the user from it
+    if token:
+        from app.core.security import decode_access_token
+        payload = decode_access_token(token)
+        if payload:
+            token_user_id = int(payload.get("sub", 0))
+            if token_user_id:
+                result = await db.execute(
+                    select(GenerationTask).where(
+                        GenerationTask.id == task_id, GenerationTask.user_id == token_user_id
+                    )
+                )
+                task = result.scalar_one_or_none()
+                if task:
+                    # Skip the normal auth-based query below
+                    results_result = await db.execute(
+                        select(GenerationResult)
+                        .where(GenerationResult.task_id == task_id)
+                        .order_by(GenerationResult.candidate_index)
+                    )
+                    results = results_result.scalars().all()
+                    if task.status != "completed":
+                        raise HTTPException(status_code=400, detail="任务未完成，无法下载")
+                    if not results:
+                        raise HTTPException(status_code=404, detail="无可下载的结果")
+
+                    import os
+                    buf = io.BytesIO()
+                    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                        for r in results:
+                            if r.image_path:
+                                abs_path = os.path.join(settings.UPLOAD_DIR, r.image_path)
+                                if os.path.exists(abs_path):
+                                    zf.write(abs_path, f"candidate_{r.candidate_index}.png")
+                            if r.svg_path:
+                                abs_path = os.path.join(settings.UPLOAD_DIR, r.svg_path)
+                                if os.path.exists(abs_path):
+                                    zf.write(abs_path, f"candidate_{r.candidate_index}.svg")
+                    buf.seek(0)
+                    return StreamingResponse(
+                        buf,
+                        media_type="application/zip",
+                        headers={"Content-Disposition": f"attachment; filename=task_{str(task_id)[:8]}_results.zip"},
+                    )
 
     result = await db.execute(
         select(GenerationTask).where(

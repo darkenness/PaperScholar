@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { toast } from 'sonner';
 import ModelSelector, { type ModelSelection } from '@/components/ModelSelector';
+import ImageLightbox from '@/components/ImageLightbox';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
 
@@ -191,23 +192,70 @@ export default function RefinePage() {
         {/* Right: Result */}
         <div>
           {result ? (
-            <div className="tech-panel p-5 space-y-4">
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-bold text-[var(--text-primary)]">结果</h3>
-                <span className="text-[10px] text-[var(--text-faint)]">{resolution} · {aspectRatio}</span>
+            <div className="space-y-4">
+              <div className="tech-panel p-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-bold text-[var(--text-primary)]">
+                    {mode === 'enhance' ? '增强结果' : '迁移结果'}
+                  </h3>
+                  <span className="text-xs text-[var(--text-muted)] bg-[var(--badge-bg)] px-2 py-1 rounded">
+                    {resolution} · {aspectRatio}
+                  </span>
+                </div>
               </div>
-              {mode === 'enhance' && result.enhanced_url && (
-                <div className="space-y-3">
-                  <div className="bg-white rounded-lg overflow-hidden"><img src={`${API_BASE}${result.enhanced_url}`} alt="Enhanced" className="w-full" /></div>
-                  <a href={`${API_BASE}${result.enhanced_url}`} download className="btn-primary text-xs py-2 px-4 inline-block">下载 {resolution} 增强图片</a>
+
+              {/* Before / After comparison */}
+              {preview && (
+                <div className="tech-panel p-4">
+                  <h4 className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider mb-3">对比</h4>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <span className="text-[10px] text-[var(--text-faint)] mb-1 block">原图</span>
+                      <ImageLightbox src={preview} alt="Original">
+                        <div className="bg-white rounded-lg overflow-hidden border border-[var(--border-main)] group relative">
+                          <img src={preview} alt="Original" className="w-full h-auto" />
+                          <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/10">
+                            <span className="px-2 py-1 bg-black/60 text-white text-[10px] rounded-full">放大</span>
+                          </div>
+                        </div>
+                      </ImageLightbox>
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-[var(--text-faint)] mb-1 block">结果 ({resolution})</span>
+                      {mode === 'enhance' && result.enhanced_url && (
+                        <ImageLightbox src={`${API_BASE}${result.enhanced_url}`} alt="Enhanced">
+                          <div className="bg-white rounded-lg overflow-hidden border border-[var(--border-main)] group relative">
+                            <img src={`${API_BASE}${result.enhanced_url}`} alt="Enhanced" className="w-full h-auto" />
+                            <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/10">
+                              <span className="px-2 py-1 bg-black/60 text-white text-[10px] rounded-full">放大</span>
+                            </div>
+                          </div>
+                        </ImageLightbox>
+                      )}
+                      {mode === 'style' && result.result_url && (
+                        <ImageLightbox src={`${API_BASE}${result.result_url}`} alt="Result">
+                          <div className="bg-white rounded-lg overflow-hidden border border-[var(--border-main)] group relative">
+                            <img src={`${API_BASE}${result.result_url}`} alt="Result" className="w-full h-auto" />
+                            <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/10">
+                              <span className="px-2 py-1 bg-black/60 text-white text-[10px] rounded-full">放大</span>
+                            </div>
+                          </div>
+                        </ImageLightbox>
+                      )}
+                    </div>
+                  </div>
                 </div>
               )}
-              {mode === 'style' && result.result_url && (
-                <div className="space-y-3">
-                  <div className="bg-white rounded-lg overflow-hidden"><img src={`${API_BASE}${result.result_url}`} alt="Result" className="w-full" /></div>
-                  <a href={`${API_BASE}${result.result_url}`} download className="btn-primary text-xs py-2 px-4 inline-block">下载 {resolution} 结果</a>
-                </div>
-              )}
+
+              {/* Download */}
+              <div className="flex gap-2">
+                {mode === 'enhance' && result.enhanced_url && (
+                  <a href={`${API_BASE}${result.enhanced_url}`} download className="btn-primary text-xs py-2 px-4">下载 {resolution} 增强图片</a>
+                )}
+                {mode === 'style' && result.result_url && (
+                  <a href={`${API_BASE}${result.result_url}`} download className="btn-primary text-xs py-2 px-4">下载 {resolution} 结果</a>
+                )}
+              </div>
             </div>
           ) : (
             <div className="tech-panel p-12 text-center text-[var(--text-muted)]">

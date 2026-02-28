@@ -21,6 +21,14 @@ export default function AdminConfigPage() {
   const [keyModelName, setKeyModelName] = useState('');
   const [keySaving, setKeySaving] = useState(false);
 
+  // System Key edit form
+  const [editingSysKey, setEditingSysKey] = useState<any>(null);
+  const [editSysBaseUrl, setEditSysBaseUrl] = useState('');
+  const [editSysApiKey, setEditSysApiKey] = useState('');
+  const [editSysModelName, setEditSysModelName] = useState('');
+  const [editSysSaving, setEditSysSaving] = useState(false);
+  const [verifyingSysId, setVerifyingSysId] = useState<number | null>(null);
+
   const load = async () => {
     setLoading(true);
     try {
@@ -72,11 +80,36 @@ export default function AdminConfigPage() {
   };
 
   const handleVerifySystemKey = async (id: number) => {
+    setVerifyingSysId(id);
     try {
       const res = await adminApi.verifySystemKey(id);
       alert(res.message);
       await load();
     } catch (e: any) { alert(e.message); }
+    setVerifyingSysId(null);
+  };
+
+  const openEditSysKey = (k: any) => {
+    setEditingSysKey(k);
+    setEditSysBaseUrl(k.base_url || '');
+    setEditSysApiKey('');
+    setEditSysModelName(k.model_name || '');
+  };
+
+  const handleEditSysKey = async () => {
+    if (!editingSysKey) return;
+    if (editSysApiKey && editSysApiKey.length < 10) { alert('API Key 长度不足（至少10位）'); return; }
+    setEditSysSaving(true);
+    try {
+      const payload: any = {};
+      if (editSysBaseUrl !== (editingSysKey.base_url || '')) payload.base_url = editSysBaseUrl;
+      if (editSysApiKey) payload.api_key = editSysApiKey;
+      if (editSysModelName !== (editingSysKey.model_name || '')) payload.model_name = editSysModelName;
+      await adminApi.updateSystemKey(editingSysKey.id, payload);
+      setEditingSysKey(null);
+      await load();
+    } catch (e: any) { alert(e.message); }
+    setEditSysSaving(false);
   };
 
   const handleDeleteSystemKey = async (id: number) => {
@@ -120,21 +153,27 @@ export default function AdminConfigPage() {
         ) : (
           <div className="divide-y divide-[var(--border-subtle)]">
             {systemKeys.map((k: any) => (
-              <div key={k.id} className="py-3 flex items-center justify-between">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-mono px-1.5 py-0.5 bg-[var(--badge-bg)] text-[var(--text-secondary)]">{k.model_type}</span>
-                    <span className="text-sm font-medium text-[var(--text-primary)]">{k.provider}</span>
-                    {k.model_name && <span className="text-xs text-[var(--text-muted)]">· {k.model_name}</span>}
-                    <span className={`px-1.5 py-0.5 text-[10px] font-bold ${k.is_verified ? 'bg-green-500/20 text-green-400' : 'bg-yellow-500/20 text-yellow-400'}`}>
-                      {k.is_verified ? '已验证' : '未验证'}
-                    </span>
+              <div key={k.id} className="py-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-mono px-1.5 py-0.5 bg-[var(--badge-bg)] text-[var(--text-secondary)]">{k.model_type}</span>
+                      <span className="text-sm font-medium text-[var(--text-primary)]">{k.provider}</span>
+                      {k.model_name && <span className="text-xs text-[var(--text-muted)]">· {k.model_name}</span>}
+                      <span className={`px-1.5 py-0.5 text-[10px] font-bold ${k.is_verified ? 'bg-green-500/20 text-green-400' : 'bg-yellow-500/20 text-yellow-400'}`}>
+                        {k.is_verified ? '已验证' : '未验证'}
+                      </span>
+                    </div>
+                    <div className="text-xs text-[var(--text-muted)] mt-0.5 font-mono">{k.api_key_preview}</div>
+                    {k.base_url && <div className="text-xs text-[var(--text-muted)] mt-0.5 font-mono truncate max-w-xs">{k.base_url}</div>}
                   </div>
-                  <div className="text-xs text-[var(--text-muted)] mt-0.5 font-mono">{k.api_key_preview}</div>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <button onClick={() => handleVerifySystemKey(k.id)} className="btn-ghost text-xs py-1 px-2">验证</button>
-                  <button onClick={() => handleDeleteSystemKey(k.id)} className="text-xs text-red-400 hover:text-red-300 px-2 py-1">删除</button>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button onClick={() => openEditSysKey(k)} className="btn-ghost text-xs py-1 px-2">编辑</button>
+                    <button onClick={() => handleVerifySystemKey(k.id)} disabled={verifyingSysId === k.id} className="btn-ghost text-xs py-1 px-2 disabled:opacity-50">
+                      {verifyingSysId === k.id ? '验证中...' : '验证'}
+                    </button>
+                    <button onClick={() => handleDeleteSystemKey(k.id)} className="text-xs text-red-400 hover:text-red-300 px-2 py-1">删除</button>
+                  </div>
                 </div>
               </div>
             ))}
@@ -179,6 +218,37 @@ export default function AdminConfigPage() {
             <div className="flex gap-3 pt-2">
               <button onClick={() => setShowKeyForm(false)} className="btn-ghost flex-1 py-2 text-sm">取消</button>
               <button onClick={handleAddSystemKey} disabled={keySaving} className="btn-primary flex-1 py-2 text-sm disabled:opacity-50">{keySaving ? '保存中...' : '保存'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit System Key Modal */}
+      {editingSysKey && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setEditingSysKey(null)}>
+          <div className="tech-panel p-6 w-full max-w-md space-y-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-bold text-[var(--text-primary)]">
+              编辑系统 API Key
+              <span className="text-xs text-[var(--text-muted)] ml-2 font-normal">{editingSysKey.provider} · {editingSysKey.model_type}</span>
+            </h3>
+            <div className="text-xs text-[var(--text-muted)] font-mono bg-[var(--badge-bg)] px-3 py-2 rounded">
+              当前: {editingSysKey.api_key_preview}
+            </div>
+            <div>
+              <label className="text-xs text-[var(--text-muted)] mb-1 block">Base URL (OpenAI 兼容需含 /v1)</label>
+              <input value={editSysBaseUrl} onChange={(e) => setEditSysBaseUrl(e.target.value)} placeholder="留空使用默认" className="w-full input-tech text-sm" />
+            </div>
+            <div>
+              <label className="text-xs text-[var(--text-muted)] mb-1 block">新 API Key (留空则不修改)</label>
+              <input value={editSysApiKey} onChange={(e) => setEditSysApiKey(e.target.value)} placeholder="留空保持不变" type="password" className="w-full input-tech text-sm" />
+            </div>
+            <div>
+              <label className="text-xs text-[var(--text-muted)] mb-1 block">模型名称</label>
+              <input value={editSysModelName} onChange={(e) => setEditSysModelName(e.target.value)} placeholder="gemini-2.5-pro" className="w-full input-tech text-sm" />
+            </div>
+            <div className="flex gap-3 pt-2">
+              <button onClick={() => setEditingSysKey(null)} className="btn-ghost flex-1 py-2 text-sm">取消</button>
+              <button onClick={handleEditSysKey} disabled={editSysSaving} className="btn-primary flex-1 py-2 text-sm disabled:opacity-50">{editSysSaving ? '保存中...' : '保存修改'}</button>
             </div>
           </div>
         </div>

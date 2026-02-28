@@ -36,6 +36,9 @@ celery[redis]==5.4.0
 Pillow==11.1.0
 cairosvg==2.7.1
 
+# PDF Processing
+PyMuPDF==1.25.3
+
 # Utilities
 python-dotenv==1.0.1
 json-repair==0.30.3

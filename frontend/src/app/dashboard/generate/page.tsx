@@ -1,8 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { generateApi } from '@/lib/api';
 import ModelSelector, { type ModelSelection } from '@/components/ModelSelector';
+import ImageLightbox from '@/components/ImageLightbox';
+import EvolutionTimeline from '@/components/EvolutionTimeline';
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
 
 // Diagram pipeline modes — aligned with PaperBanana demo
 const DIAGRAM_PIPELINE_MODES = [
@@ -44,9 +48,13 @@ export default function GeneratePage() {
   const [numCandidates, setNumCandidates] = useState(1);
   const [aspectRatio, setAspectRatio] = useState('16:9');
   const [maxCriticRounds, setMaxCriticRounds] = useState(3);
+  const [retrieverContentLimit, setRetrieverContentLimit] = useState<number | null>(null);
+  const [retrieverTopK, setRetrieverTopK] = useState(10);
+  const [retrieverPoolSize, setRetrieverPoolSize] = useState<number | null>(null);
 
   const [modelSel, setModelSel] = useState<ModelSelection>({ chatModelName: '', chatKeyId: null, imageModelName: '', imageKeyId: null });
 
+  const [extracting, setExtracting] = useState(false);
   const [loading, setLoading] = useState(false);
   const [taskId, setTaskId] = useState<string | null>(null);
   const [events, setEvents] = useState<SSEEvent[]>([]);
@@ -55,6 +63,54 @@ export default function GeneratePage() {
   const [previewImages, setPreviewImages] = useState<string[]>([]);
   const [error, setError] = useState('');
   const [isDone, setIsDone] = useState(false);
+  const [taskStatus, setTaskStatus] = useState<'idle' | 'running' | 'completed' | 'failed' | 'cancelled'>('idle');
+  const evtSourceRef = useRef<EventSource | null>(null);
+  const [finalResults, setFinalResults] = useState<any>(null);
+  const [activeCandidateIdx, setActiveCandidateIdx] = useState(0);
+  const [loadingResults, setLoadingResults] = useState(false);
+
+  // Fetch final results when generation completes
+  useEffect(() => {
+    if (taskStatus !== 'completed' || !taskId) return;
+    (async () => {
+      setLoadingResults(true);
+      try {
+        const data = await generateApi.getTask(taskId);
+        setFinalResults(data);
+        setActiveCandidateIdx(0);
+      } catch (e: any) {
+        console.error('Failed to load final results:', e);
+      }
+      setLoadingResults(false);
+    })();
+  }, [taskStatus, taskId]);
+
+  const handleExtractFromPaper = async (file: File) => {
+    setExtracting(true);
+    setError('');
+    const token = localStorage.getItem('token');
+    const formData = new FormData();
+    formData.append('file', file);
+    if (modelSel.chatModelName) formData.append('chat_model_name', modelSel.chatModelName);
+    if (modelSel.chatKeyId) formData.append('chat_key_id', String(modelSel.chatKeyId));
+
+    try {
+      const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
+      const res = await fetch(`${API_BASE}/api/v1/edit/extract-methodology`, {
+        method: 'POST', body: formData,
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: '提取失败' }));
+        throw new Error(err.detail || '提取失败');
+      }
+      const data = await res.json();
+      setContent(data.methodology);
+    } catch (e: any) {
+      setError(e.message || '论文方法论提取失败');
+    }
+    setExtracting(false);
+  };
 
   const handleGenerate = async () => {
     if (!content.trim() || !caption.trim()) {
@@ -66,6 +122,8 @@ export default function GeneratePage() {
     setEvents([]);
     setPreviewImages([]);
     setIsDone(false);
+    setFinalResults(null);
+    setActiveCandidateIdx(0);
     setProgress(0);
     setCurrentStage('');
 
@@ -79,6 +137,9 @@ export default function GeneratePage() {
         num_candidates: numCandidates,
         aspect_ratio: taskType === 'diagram' ? aspectRatio : undefined,
         max_critic_rounds: maxCriticRounds,
+        retriever_content_limit: retrieverContentLimit,
+        retriever_top_k: retrieverTopK,
+        retriever_pool_size: retrieverPoolSize,
         chat_model_name: modelSel.chatModelName || undefined,
         chat_key_id: modelSel.chatKeyId || undefined,
         image_model_name: modelSel.imageModelName || undefined,
@@ -86,19 +147,21 @@ export default function GeneratePage() {
       });
 
       setTaskId(res.task_id);
+      setTaskStatus('running');
 
       // Connect to SSE stream with token as query param (EventSource can't send headers)
       const token = localStorage.getItem('token');
       const evtSource = new EventSource(
         `${generateApi.streamUrl(res.task_id)}?token=${encodeURIComponent(token || '')}`,
       );
+      evtSourceRef.current = evtSource;
 
       evtSource.addEventListener('stage', (e) => {
         const data = JSON.parse(e.data);
         const now = new Date().toLocaleTimeString();
         setEvents((prev) => [...prev, { type: 'stage', data, time: now }]);
         setCurrentStage(data.name || '');
-        if (data.progress) setProgress(data.progress);
+        if (data.progress) setProgress((prev) => Math.max(prev, data.progress));
       });
 
       evtSource.addEventListener('intermediate', (e) => {
@@ -116,16 +179,56 @@ export default function GeneratePage() {
         setProgress(1);
         setCurrentStage('');
         setLoading(false);
+        evtSourceRef.current = null;
+        if (data.status === 'failed') {
+          setTaskStatus('failed');
+          setError(data.message || '生成失败，请检查 API 配置或稍后重试');
+        } else if (data.status === 'cancelled') {
+          setTaskStatus('cancelled');
+        } else {
+          setTaskStatus('completed');
+        }
         evtSource.close();
+      });
+
+      evtSource.addEventListener('error', (e) => {
+        try {
+          const data = JSON.parse((e as MessageEvent).data);
+          const now = new Date().toLocaleTimeString();
+          setEvents((prev) => [...prev, { type: 'error', data, time: now }]);
+          setError(data.message || '生成过程中发生错误');
+          setTaskStatus('failed');
+        } catch {}
       });
 
       evtSource.onerror = () => {
         setLoading(false);
+        evtSourceRef.current = null;
         evtSource.close();
       };
     } catch (err: any) {
       setError(err.message || '创建任务失败');
       setLoading(false);
+      setTaskStatus('idle');
+    }
+  };
+
+  const handleCancel = async () => {
+    if (!taskId) return;
+    try {
+      await generateApi.cancel(taskId);
+      if (evtSourceRef.current) {
+        evtSourceRef.current.close();
+        evtSourceRef.current = null;
+      }
+      setLoading(false);
+      setTaskStatus('cancelled');
+      setCurrentStage('');
+      setError('');
+      const now = new Date().toLocaleTimeString();
+      setEvents((prev) => [...prev, { type: 'stage', data: { name: 'cancelled', status: '已取消' }, time: now }]);
+    } catch (err: any) {
+      setError(err.message || '取消失败');
     }
   };
 
@@ -168,6 +271,14 @@ export default function GeneratePage() {
             </svg>
             配置与输入
           </button>
+          {loading && (
+            <button
+              onClick={handleCancel}
+              className="px-4 py-2 border border-red-500/50 text-red-400 hover:bg-red-500/10 transition-colors text-xs font-medium"
+            >
+              取消生成
+            </button>
+          )}
           <button
             onClick={handleGenerate}
             disabled={loading}
@@ -188,11 +299,23 @@ export default function GeneratePage() {
         {(loading || isDone) && (
           <div className="tech-panel p-4">
             <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-medium text-[var(--text-primary)]">
-                {isDone ? '生成完成' : currentStage ? `正在执行: ${currentStage}` : '准备中...'}
+              <span className={`text-sm font-medium ${
+                taskStatus === 'failed' ? 'text-red-400' :
+                taskStatus === 'cancelled' ? 'text-yellow-400' :
+                isDone ? 'text-green-400' : 'text-[var(--text-primary)]'
+              }`}>
+                {taskStatus === 'failed' ? '生成失败' :
+                 taskStatus === 'cancelled' ? '已取消' :
+                 isDone ? '生成完成' :
+                 currentStage ? `正在执行: ${currentStage}` : '准备中...'}
               </span>
               <span className="text-xs text-[var(--text-muted)]">{Math.round(progress * 100)}%</span>
             </div>
+            {taskStatus === 'failed' && error && (
+              <div className="mt-2 text-xs text-red-400 bg-red-500/10 border border-red-500/20 px-3 py-2 rounded">
+                {error}
+              </div>
+            )}
             <div className="w-full h-1.5 bg-[var(--bg-inset)] overflow-hidden">
               <div
                 className="h-full bg-primary-500 transition-all duration-500"
@@ -202,10 +325,10 @@ export default function GeneratePage() {
           </div>
         )}
 
-        {/* Preview Images — responsive grid */}
-        {previewImages.length > 0 && (
+        {/* Preview Images — responsive grid (during generation) */}
+        {previewImages.length > 0 && !finalResults && (
           <div className="tech-panel p-4">
-            <h3 className="text-sm font-bold text-[var(--text-primary)] mb-3">预览图 ({previewImages.length})</h3>
+            <h3 className="text-sm font-bold text-[var(--text-primary)] mb-3">中间预览 ({previewImages.length})</h3>
             <div className={`grid gap-4 ${
               previewImages.length === 1 ? 'grid-cols-1 max-w-2xl mx-auto' :
               previewImages.length === 2 ? 'grid-cols-1 md:grid-cols-2' :
@@ -213,9 +336,11 @@ export default function GeneratePage() {
               'grid-cols-2 md:grid-cols-3 lg:grid-cols-5'
             }`}>
               {previewImages.map((url, i) => (
-                <div key={i} className="overflow-hidden border border-[var(--border-main)] bg-white group">
-                  <img src={url} alt={`Preview ${i + 1}`} className="w-full h-auto group-hover:scale-105 transition-transform duration-300" />
-                </div>
+                <ImageLightbox key={i} src={url} alt={`Preview ${i + 1}`}>
+                  <div className="overflow-hidden border border-[var(--border-main)] bg-white group">
+                    <img src={url} alt={`Preview ${i + 1}`} className="w-full h-auto group-hover:scale-105 transition-transform duration-300" />
+                  </div>
+                </ImageLightbox>
               ))}
             </div>
           </div>
@@ -224,27 +349,223 @@ export default function GeneratePage() {
         {/* Events Log */}
         {events.length > 0 && (
           <div className="tech-panel p-4">
-            <h3 className="text-sm font-bold text-[var(--text-primary)] mb-3">Pipeline 日志</h3>
-            <div className="max-h-60 overflow-y-auto space-y-1.5">
-              {events.map((evt, i) => (
-                <div key={i} className="flex items-start gap-2 text-xs">
-                  <span className="text-[var(--text-muted)] font-mono shrink-0">{evt.time}</span>
-                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold shrink-0 ${
-                    evt.type === 'stage' ? 'bg-primary-500/20 text-primary-400' :
-                    evt.type === 'intermediate' ? 'bg-emerald-500/20 text-emerald-400' :
-                    'bg-gray-500/20 text-gray-400'
-                  }`}>
-                    {evt.type}
-                  </span>
-                  <span className="text-[var(--text-secondary)] break-all">
-                    {evt.type === 'stage' ? `${evt.data.name} - ${evt.data.status}` :
-                     evt.data.type === 'text' ? evt.data.content?.substring(0, 150) + '...' :
-                     evt.data.type === 'image' ? `[图片] ${evt.data.stage || ''}` :
-                     JSON.stringify(evt.data).substring(0, 100)}
-                  </span>
+            <details className={finalResults ? '' : 'open'}>
+              <summary className="text-sm font-bold text-[var(--text-primary)] mb-3 cursor-pointer select-none">
+                Pipeline 日志 ({events.length})
+              </summary>
+              <div className="max-h-60 overflow-y-auto space-y-1.5">
+                {events.map((evt, i) => (
+                  <div key={i} className="flex items-start gap-2 text-xs">
+                    <span className="text-[var(--text-muted)] font-mono shrink-0">{evt.time}</span>
+                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold shrink-0 ${
+                      evt.type === 'stage' ? 'bg-primary-500/20 text-primary-400' :
+                      evt.type === 'intermediate' ? 'bg-emerald-500/20 text-emerald-400' :
+                      'bg-gray-500/20 text-gray-400'
+                    }`}>
+                      {evt.type}
+                    </span>
+                    <span className="text-[var(--text-secondary)] break-all">
+                      {evt.type === 'stage' ? `${evt.data.name} - ${evt.data.status}` :
+                       evt.data.type === 'text' ? evt.data.content?.substring(0, 150) + '...' :
+                       evt.data.type === 'image' ? `[图片] ${evt.data.stage || ''}` :
+                       JSON.stringify(evt.data).substring(0, 100)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </details>
+          </div>
+        )}
+
+        {/* ===== Final Results Section ===== */}
+        {taskStatus === 'completed' && (loadingResults || finalResults) && (
+          <div className="space-y-4">
+            {loadingResults ? (
+              <div className="tech-panel p-8 flex items-center justify-center gap-3">
+                <div className="w-5 h-5 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
+                <span className="text-sm text-[var(--text-muted)]">加载最终结果...</span>
+              </div>
+            ) : finalResults?.results?.length > 0 && (
+              <>
+                {/* Results header */}
+                <div className="tech-panel p-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <h3 className="text-sm font-bold text-[var(--text-primary)]">
+                        生成结果 ({finalResults.results.length} 张候选图)
+                      </h3>
+                      {finalResults.completed_at && (
+                        <span className="text-[10px] text-[var(--text-faint)] font-mono">
+                          {new Date(finalResults.completed_at).toLocaleString()}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {taskId && (
+                        <a
+                          href={`${API_BASE}${generateApi.downloadZip(taskId)}`}
+                          className="btn-ghost text-xs py-1.5 px-3 flex items-center gap-1.5"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            const token = localStorage.getItem('token');
+                            window.open(`${API_BASE}${generateApi.downloadZip(taskId)}?token=${encodeURIComponent(token || '')}`, '_blank');
+                          }}
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                          </svg>
+                          下载全部 (ZIP)
+                        </a>
+                      )}
+                    </div>
+                  </div>
                 </div>
-              ))}
-            </div>
+
+                {/* Candidates overview grid */}
+                <div className={`grid gap-3 ${
+                  finalResults.results.length === 1 ? 'grid-cols-1 max-w-2xl mx-auto' :
+                  finalResults.results.length === 2 ? 'grid-cols-2' :
+                  finalResults.results.length <= 4 ? 'grid-cols-2 lg:grid-cols-4' :
+                  'grid-cols-2 md:grid-cols-3 lg:grid-cols-5'
+                }`}>
+                  {finalResults.results.map((r: any, i: number) => (
+                    <div
+                      key={r.id}
+                      className={`tech-panel overflow-hidden cursor-pointer transition-all ${
+                        activeCandidateIdx === i
+                          ? 'ring-2 ring-primary-500 border-primary-500/50'
+                          : 'hover:border-primary-500/30'
+                      }`}
+                      onClick={() => setActiveCandidateIdx(i)}
+                    >
+                      {r.image_url ? (
+                        <div className="aspect-square bg-white overflow-hidden">
+                          <img
+                            src={`${API_BASE}${r.image_url}`}
+                            alt={`Candidate ${i}`}
+                            className="w-full h-full object-cover"
+                          />
+                        </div>
+                      ) : (
+                        <div className="aspect-square bg-[var(--bg-inset)] flex items-center justify-center">
+                          <span className="text-[var(--text-faint)] text-xs">无图片</span>
+                        </div>
+                      )}
+                      <div className="p-2 flex items-center justify-between">
+                        <span className="text-xs font-medium text-[var(--text-secondary)]">
+                          候选 {i}
+                        </span>
+                        {r.quality_score != null && (
+                          <span className="text-[10px] font-bold text-primary-400">
+                            {r.quality_score.toFixed(1)}/10
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Active candidate detail view */}
+                {finalResults.results[activeCandidateIdx] && (() => {
+                  const activeResult = finalResults.results[activeCandidateIdx];
+                  const activeImageUrl = activeResult.image_url ? `${API_BASE}${activeResult.image_url}` : null;
+
+                  return (
+                    <div className="tech-panel p-5">
+                      <div className="flex items-center justify-between mb-4">
+                        <div className="flex items-center gap-3">
+                          {/* Candidate selector tabs */}
+                          <div className="flex items-center gap-1 bg-[var(--bg-inset)] rounded-lg p-0.5">
+                            {finalResults.results.map((_: any, i: number) => (
+                              <button
+                                key={i}
+                                onClick={() => setActiveCandidateIdx(i)}
+                                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all ${
+                                  activeCandidateIdx === i
+                                    ? 'bg-primary-600 text-white shadow-sm'
+                                    : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+                                }`}
+                              >
+                                候选 {i}
+                                {finalResults.results[i].quality_score != null && (
+                                  <span className="ml-1 opacity-70">
+                                    ({finalResults.results[i].quality_score.toFixed(1)})
+                                  </span>
+                                )}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {activeResult.svg_url && (
+                            <a href={`${API_BASE}${activeResult.svg_url}`} download className="btn-ghost text-xs py-1.5 px-3">
+                              下载 SVG
+                            </a>
+                          )}
+                          {activeImageUrl && (
+                            <a href={activeImageUrl} download className="btn-primary text-xs py-1.5 px-3">
+                              下载图片
+                            </a>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+                        {/* Main image — large with lightbox */}
+                        <div className="lg:col-span-2">
+                          {activeImageUrl ? (
+                            <ImageLightbox src={activeImageUrl} alt={`Candidate ${activeCandidateIdx}`}>
+                              <div className="bg-white rounded-lg overflow-hidden border border-[var(--border-main)] group relative">
+                                <img
+                                  src={activeImageUrl}
+                                  alt={`Candidate ${activeCandidateIdx}`}
+                                  className="w-full h-auto group-hover:scale-[1.02] transition-transform duration-300"
+                                />
+                                <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/10">
+                                  <span className="px-3 py-1.5 bg-black/60 text-white text-xs rounded-full flex items-center gap-1.5">
+                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                                      <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607zM10.5 7.5v6m3-3h-6" />
+                                    </svg>
+                                    点击放大
+                                  </span>
+                                </div>
+                              </div>
+                            </ImageLightbox>
+                          ) : (
+                            <div className="bg-[var(--bg-inset)] rounded-lg flex items-center justify-center aspect-video">
+                              <span className="text-[var(--text-faint)]">无图片</span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Right panel: score + evolution timeline */}
+                        <div className="space-y-4">
+                          {/* Quality Score */}
+                          {activeResult.quality_score != null && (
+                            <div className="tech-panel p-4">
+                              <h4 className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider mb-2">质量评分</h4>
+                              <div className="flex items-end gap-1">
+                                <span className="text-3xl font-bold text-primary-400">
+                                  {activeResult.quality_score.toFixed(1)}
+                                </span>
+                                <span className="text-sm text-[var(--text-faint)] mb-1">/ 10</span>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Evolution Timeline */}
+                          {taskId && (
+                            <div className="tech-panel p-4">
+                              <EvolutionTimeline taskId={taskId} compact={true} />
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </>
+            )}
           </div>
         )}
 
@@ -310,14 +631,32 @@ export default function GeneratePage() {
 
               {/* Content */}
               <div>
-                <label className="text-[11px] font-bold text-[var(--text-muted)] mb-1.5 block uppercase tracking-wider">
-                  {taskType === 'diagram' ? '方法描述' : '原始数据'}
-                </label>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-[11px] font-bold text-[var(--text-muted)] uppercase tracking-wider">
+                    {taskType === 'diagram' ? '方法描述' : '原始数据'}
+                  </label>
+                  {taskType === 'diagram' && (
+                    <label className={`flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-medium cursor-pointer transition-all ${
+                      extracting ? 'opacity-50 pointer-events-none' : 'hover:bg-primary-500/10 text-primary-400 hover:text-primary-300'
+                    }`}>
+                      <input
+                        type="file"
+                        accept=".pdf,.md,.txt,.tex"
+                        className="hidden"
+                        onChange={(e) => { const f = e.target.files?.[0]; if (f) handleExtractFromPaper(f); e.target.value = ''; }}
+                      />
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+                      </svg>
+                      {extracting ? '提取中...' : '从论文提取'}
+                    </label>
+                  )}
+                </div>
                 <textarea
                   value={content}
                   onChange={(e) => setContent(e.target.value)}
                   placeholder={taskType === 'diagram'
-                    ? '粘贴你的论文方法部分内容 (推荐 Markdown 格式)...'
+                    ? '粘贴你的论文方法部分内容 (推荐 Markdown 格式)\n\n或点击右上方「从论文提取」上传 PDF 自动提取方法论...'
                     : '粘贴原始数据，支持 JSON、表格或 CSV 格式...'}
                   rows={6}
                   className="w-full input-tech resize-none text-sm"
@@ -387,6 +726,49 @@ export default function GeneratePage() {
                   <div>
                     <label className="text-[11px] text-[var(--text-muted)] mb-1 block">Critic轮数: {maxCriticRounds}</label>
                     <input type="range" min={1} max={5} value={maxCriticRounds} onChange={(e) => setMaxCriticRounds(Number(e.target.value))} className="w-full" />
+                  </div>
+                </div>
+
+                {/* Retriever context strategy */}
+                <div className="space-y-3 pt-2 border-t border-[var(--border-subtle)]">
+                  <label className="text-[11px] font-bold text-[var(--text-muted)] block uppercase tracking-wider">Retriever 上下文策略</label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[11px] text-[var(--text-muted)] mb-1 block">内容截断</label>
+                      <select
+                        value={retrieverContentLimit === null ? 'none' : String(retrieverContentLimit)}
+                        onChange={(e) => setRetrieverContentLimit(e.target.value === 'none' ? null : Number(e.target.value))}
+                        className="w-full input-tech text-sm py-2"
+                      >
+                        <option value="none">不截断（完整内容）</option>
+                        <option value="500">500 字</option>
+                        <option value="1000">1000 字</option>
+                        <option value="2000">2000 字</option>
+                        <option value="5000">5000 字</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[11px] text-[var(--text-muted)] mb-1 block">TopK 示例数: {retrieverTopK}</label>
+                      <input type="range" min={1} max={20} value={retrieverTopK} onChange={(e) => setRetrieverTopK(Number(e.target.value))} className="w-full" />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-[11px] text-[var(--text-muted)] mb-1 block">候选池大小</label>
+                    <select
+                      value={retrieverPoolSize === null ? 'default' : String(retrieverPoolSize)}
+                      onChange={(e) => setRetrieverPoolSize(e.target.value === 'default' ? null : Number(e.target.value))}
+                      className="w-full input-tech text-sm py-2"
+                    >
+                      <option value="default">默认（示意图200 / 统计图全部）</option>
+                      <option value="50">50 条</option>
+                      <option value="100">100 条</option>
+                      <option value="200">200 条</option>
+                      <option value="500">500 条</option>
+                      <option value="0">全部（不限制）</option>
+                    </select>
+                    <p className="text-[10px] text-[var(--text-faint)] mt-1">
+                      不截断 + 全部候选池 = 最接近 PaperBanana 原版（需要模型支持超长上下文）
+                    </p>
                   </div>
                 </div>
               </div>

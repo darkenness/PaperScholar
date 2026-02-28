@@ -7,23 +7,142 @@ from typing import Any, Callable, Dict, List, Optional
 
 from app.agents.base_agent import BaseAgent
 
-DIAGRAM_RETRIEVER_SYSTEM = """You are a professional academic diagram retriever. Given a target diagram's caption and methodology section, and a candidate pool of reference diagrams, select the Top 10 most relevant diagrams that can serve as in-context examples.
+DIAGRAM_RETRIEVER_SYSTEM = """
+# Background & Goal
+We are building an **AI system to automatically generate method diagrams for academic papers**. Given a paper's methodology section and a figure caption, the system needs to create a high-quality illustrative diagram that visualizes the described method.
 
-Relevance criteria:
-1. Structural similarity (flow charts vs. architecture diagrams vs. comparison tables)
-2. Domain proximity (same field or similar methodology type)
-3. Visual complexity match
+To help the AI learn how to generate appropriate diagrams, we use a **few-shot learning approach**: we provide it with reference examples of similar diagrams. The AI will learn from these examples to understand what kind of diagram to create for the target.
 
-Output a valid JSON object: {"top10_diagrams": ["id1", "id2", ...]}"""
+# Your Task
+**You are the Retrieval Agent.** Your job is to select the most relevant reference diagrams from a candidate pool that will serve as few-shot examples for the diagram generation model.
 
-PLOT_RETRIEVER_SYSTEM = """You are a professional statistical plot retriever. Given a target plot's visual intent and raw data, and a candidate pool of reference plots, select the Top 10 most relevant plots.
+You will receive:
+- **Target Input:** The methodology section and caption of the diagram we need to generate
+- **Candidate Pool:** ~200 existing diagrams (each with methodology and caption)
 
-Relevance criteria:
-1. Chart type similarity (bar, line, scatter, heatmap, etc.)
-2. Data structure match (categorical vs. continuous, single vs. multi-series)
-3. Visual style similarity
+You must select the **Top 10 candidates** that would be most helpful as examples for teaching the AI how to draw the target diagram.
 
-Output a valid JSON object: {"top10_plots": ["id1", "id2", ...]}"""
+# Selection Logic (Topic + Intent)
+
+Your goal is to find examples that match the Target in both **Domain** and **Diagram Type**.
+
+**1. Match Research Topic (Use Methodology & Caption):**
+* What is the domain? (e.g., Agent & Reasoning, Vision & Perception, Generative & Learning, Science & Applications).
+* Select candidates that belong to the **same research domain**.
+* *Why?* Similar domains share similar terminology (e.g., "Actor-Critic" in RL).
+
+**2. Match Visual Intent (Use Caption & Keywords):**
+* What type of diagram is implied? (e.g., "Framework", "Pipeline", "Detailed Module", "Performance Chart").
+* Select candidates with **similar visual structures**.
+* *Why?* A "Framework" diagram example is useless for drawing a "Performance Bar Chart", even if they are in the same domain.
+
+**Ranking Priority:**
+1.  **Best Match:** Same Topic AND Same Visual Intent (e.g., Target is "Agent Framework" -> Candidate is "Agent Framework", Target is "Dataset Construction Pipeline" -> Candidate is "Dataset Construction Pipeline").
+2.  **Second Best:** Same Visual Intent (e.g., Target is "Agent Framework" -> Candidate is "Vision Framework"). *Structure is more important than Topic for drawing.*
+3.  **Avoid:** Different Visual Intent (e.g., Target is "Pipeline" -> Candidate is "Bar Chart").
+
+# Input Data
+
+## Target Input
+-   **Caption:** [Caption of the target diagram]
+-   **Methodology section:** [Methodology section of the target paper]
+
+## Candidate Pool
+List of candidate diagrams, each structured as follows:
+
+Candidate Diagram i:
+-   **Diagram ID:** [ID of the candidate diagram (ref_1, ref_2, ...)]
+-   **Caption:** [Caption of the candidate diagram]
+-   **Methodology section:** [Methodology section of the candidate's paper]
+
+# Output Format
+Provide your output strictly in the following JSON format, containing only the **exact IDs** of the Top 10 selected diagrams (use the exact IDs from the Candidate Pool, such as "ref_1", "ref_25", "ref_100", etc.):
+```json
+{
+  "top10_diagrams": [
+    "ref_1",
+    "ref_25",
+    "ref_100",
+    "ref_42",
+    "ref_7",
+    "ref_156",
+    "ref_89",
+    "ref_3",
+    "ref_201",
+    "ref_67"
+  ]
+}
+```
+"""
+
+PLOT_RETRIEVER_SYSTEM = """
+# Background & Goal
+We are building an **AI system to automatically generate statistical plots**. Given a plot's raw data and the visual intent, the system needs to create a high-quality visualization that effectively presents the data.
+
+To help the AI learn how to generate appropriate plots, we use a **few-shot learning approach**: we provide it with reference examples of similar plots. The AI will learn from these examples to understand what kind of plot to create for the target data.
+
+# Your Task
+**You are the Retrieval Agent.** Your job is to select the most relevant reference plots from a candidate pool that will serve as few-shot examples for the plot generation model.
+
+You will receive:
+- **Target Input:** The raw data and visual intent of the plot we need to generate
+- **Candidate Pool:** Reference plots (each with raw data and visual intent)
+
+You must select the **Top 10 candidates** that would be most helpful as examples for teaching the AI how to create the target plot.
+
+# Selection Logic (Data Type + Visual Intent)
+
+Your goal is to find examples that match the Target in both **Data Characteristics** and **Plot Type**.
+
+**1. Match Data Characteristics (Use Raw Data & Visual Intent):**
+* What type of data is it? (e.g., categorical vs numerical, single series vs multi-series, temporal vs comparative).
+* What are the data dimensions? (e.g., 1D, 2D, 3D).
+* Select candidates with **similar data structures and characteristics**.
+* *Why?* Different data types require different visualization approaches.
+
+**2. Match Visual Intent (Use Visual Intent):**
+* What type of plot is implied? (e.g., "bar chart", "scatter plot", "line chart", "pie chart", "heatmap", "radar chart").
+* Select candidates with **similar plot types**.
+* *Why?* A "bar chart" example is more useful for generating another bar chart than a "scatter plot" example, even if the data domains are similar.
+
+**Ranking Priority:**
+1.  **Best Match:** Same Data Type AND Same Plot Type (e.g., Target is "multi-series line chart" -> Candidate is "multi-series line chart").
+2.  **Second Best:** Same Plot Type with compatible data (e.g., Target is "bar chart with 5 categories" -> Candidate is "bar chart with 6 categories").
+3.  **Avoid:** Different Plot Type (e.g., Target is "bar chart" -> Candidate is "pie chart"), unless there are no more candidates with the same plot type.
+
+# Input Data
+
+## Target Input
+-   **Visual Intent:** [Visual intent of the target plot]
+-   **Raw Data:** [Raw data to be visualized]
+
+## Candidate Pool
+List of candidate plots, each structured as follows:
+
+Candidate Plot i:
+-   **Plot ID:** [ID of the candidate plot (ref_0, ref_1, ...)]
+-   **Visual Intent:** [Visual intent of the candidate plot]
+-   **Raw Data:** [Raw data of the candidate plot]
+
+# Output Format
+Provide your output strictly in the following JSON format, containing only the **exact Plot IDs** of the Top 10 selected plots (use the exact IDs from the Candidate Pool, such as "ref_0", "ref_25", "ref_100", etc.):
+```json
+{
+  "top10_plots": [
+    "ref_0",
+    "ref_25",
+    "ref_100",
+    "ref_42",
+    "ref_7",
+    "ref_156",
+    "ref_89",
+    "ref_3",
+    "ref_201",
+    "ref_67"
+  ]
+}
+```
+"""
 
 
 class RetrieverAgent(BaseAgent):
@@ -95,7 +214,8 @@ class RetrieverAgent(BaseAgent):
             return data
 
         if retrieval_setting == "random":
-            sample_size = min(10, len(candidates))
+            top_k = data.get("retriever_top_k", 10)
+            sample_size = min(top_k, len(candidates))
             selected = random.sample(candidates, sample_size)
             # Load reference images for in-context learning
             selected = self._load_reference_images(selected, task_type)
@@ -126,15 +246,32 @@ class RetrieverAgent(BaseAgent):
             candidate_labels = ["Diagram ID", "Caption", "Methodology section"]
             output_key = "top10_diagrams"
 
-        # Build prompt with candidate pool (limit to 200)
-        pool = candidates[:200]
-        user_prompt = f"**Target Input**\n- {target_labels[0]}: {visual_intent}\n- {target_labels[1]}: {content[:2000]}\n\n**Candidate Pool**\n"
+        # Build prompt with candidate pool
+        # Use configurable pool_size (default: 200 for diagram, unlimited for plot)
+        pool_size = data.get("retriever_pool_size")
+        if pool_size is not None:
+            pool = candidates if pool_size == 0 else candidates[:pool_size]
+        else:
+            pool = candidates if task_type == "plot" else candidates[:200]
+
+        content_limit = data.get("retriever_content_limit")  # None = no truncation
+        top_k = data.get("retriever_top_k", 10)
+
+        user_prompt = f"**Target Input**\n- {target_labels[0]}: {visual_intent}\n- {target_labels[1]}: {content}\n\n**Candidate Pool**\n"
 
         for idx, item in enumerate(pool):
-            item_content = str(item.get("content", ""))[:200]
+            item_content = str(item.get("content", ""))
+            if content_limit and len(item_content) > content_limit:
+                item_content = item_content[:content_limit] + "..."
             user_prompt += f"Candidate {idx+1}:\n- {candidate_labels[0]}: {item['id']}\n- {candidate_labels[1]}: {item.get('visual_intent', '')}\n- {candidate_labels[2]}: {item_content}\n\n"
 
-        user_prompt += f"Select the Top 10 most relevant {task_type}s. Output JSON only."
+        user_prompt += f"Select the Top {top_k} most relevant {task_type}s. Output JSON only."
+
+        await self.emit(on_event, "intermediate", {
+            "type": "text", "stage": "retriever",
+            "content": f"Retriever prompt: {len(pool)} candidates, ~{len(user_prompt)//1000}K chars"
+            + (f", content truncated to {content_limit}" if content_limit else ", full content"),
+        })
 
         try:
             response = await self.chat_lb.chat(
@@ -147,7 +284,7 @@ class RetrieverAgent(BaseAgent):
             ref_ids = parsed.get(output_key, [])
 
             id_to_item = {item["id"]: item for item in candidates}
-            retrieved = [id_to_item[rid] for rid in ref_ids if rid in id_to_item]
+            retrieved = [id_to_item[rid] for rid in ref_ids if rid in id_to_item][:top_k]
             # Load reference images for in-context learning
             retrieved = self._load_reference_images(retrieved, task_type)
 
@@ -157,7 +294,7 @@ class RetrieverAgent(BaseAgent):
 
         except Exception as e:
             print(f"[Retriever] LLM retrieval failed: {e}, falling back to random")
-            sample_size = min(10, len(candidates))
+            sample_size = min(top_k, len(candidates))
             selected = random.sample(candidates, sample_size) if candidates else []
             selected = self._load_reference_images(selected, task_type)
             data["top10_references"] = [item["id"] for item in selected]

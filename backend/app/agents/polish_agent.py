@@ -3,37 +3,64 @@ Adapted from PaperBanana's polish_agent.py."""
 
 import base64
 import os
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from app.agents.base_agent import BaseAgent
 
-DIAGRAM_SUGGESTION_SYSTEM = """You are a senior art director for NeurIPS 2025. Critique a diagram against the style guide.
-Provide up to 10 concise, actionable improvement suggestions focusing on aesthetics (color, layout, fonts, icons).
-If the diagram is substantially compliant, output "No changes needed"."""
+DIAGRAM_SUGGESTION_SYSTEM = """
+You are a senior art director for NeurIPS 2025. Your task is to critique a diagram against a provided style guide.
+Provide up to 10 concise, actionable improvement suggestions. Focus on aesthetics (color, layout, fonts, icons).
+Directly list the suggestions. Do not use filler phrases like "Based on the style guide...".
+If the diagram is substantially compliant, output "No changes needed".
+"""
 
-PLOT_SUGGESTION_SYSTEM = """You are a senior data visualization expert for NeurIPS 2025. Critique a plot against the style guide.
-Provide up to 10 concise, actionable improvement suggestions focusing on aesthetics (color, layout, fonts).
-If the plot is substantially compliant, output "No changes needed"."""
+PLOT_SUGGESTION_SYSTEM = """
+You are a senior data visualization expert for NeurIPS 2025. Your task is to critique a plot against a provided style guide.
+Provide up to 10 concise, actionable improvement suggestions. Focus on aesthetics (color, layout, fonts).
+Directly list the suggestions. Do not use filler phrases like "Based on the style guide...".
+If the plot is substantially compliant, output "No changes needed".
+"""
 
-POLISH_SYSTEM = """You are a professional figure polishing expert for top-tier AI conferences. Given an existing image and improvement suggestions, generate a polished version that:
-1. Preserves semantic logic and structure
-2. Applies the aesthetic improvements
-3. Maintains all data accuracy (for plots)
-4. Meets publication quality standards"""
+DIAGRAM_POLISH_SYSTEM = """
+## ROLE
+You are a professional diagram polishing expert for top-tier AI conferences (e.g., NeurIPS 2025).
 
-STYLE_GUIDE_DIAGRAM = """### NeurIPS 2025 Diagram Style Guide (Summary)
-- **Color**: Soft Tech & Scientific Pastels. Light desaturated backgrounds (#F5F5DC, #E6F3FF, #E0F2F1). Medium saturation for active modules. Warm=trainable, Cool=frozen.
-- **Shapes**: Rounded Rectangles (radius 5-10px) for processes. 3D cuboids for tensors. Cylinders for memory/databases.
-- **Lines**: Orthogonal for architectures, curved for system logic. Solid=data flow, dashed=auxiliary flow.
-- **Typography**: Sans-serif for labels (Arial/Roboto). Serif italic for math variables.
-- **Icons**: Fire/lightning=trainable, snowflake/padlock=frozen, gear=processing."""
+## TASK
+You are given an existing diagram image and a list of specific improvement suggestions. Your task is to generate a polished version of this diagram by applying these suggestions while preserving the semantic logic and structure of the original diagram.
 
-STYLE_GUIDE_PLOT = """### NeurIPS 2025 Plot Style Guide (Summary)
-- **Color**: Use colorblind-friendly palettes. Avoid fully saturated colors. Use muted tones with one accent.
-- **Layout**: Tight layout, no wasted space. Legend inside plot when possible.
-- **Typography**: Sans-serif labels (10-12pt). Axis titles bold. Tick labels regular.
-- **Grid**: Light gray grid lines. No heavy borders.
-- **Markers**: Distinct shapes for different series. Consistent line widths (1.5-2pt)."""
+## OUTPUT
+Generate a polished diagram image that maintains the original content while applying the improvement suggestions.
+"""
+
+PLOT_POLISH_SYSTEM = """
+## ROLE
+You are a professional plot polishing expert for top-tier AI conferences (e.g., NeurIPS 2025).
+
+## TASK
+You are given an existing statistical plot image and a list of specific improvement suggestions. Your task is to generate a polished version of this plot by applying these suggestions while preserving all the data and quantitative information.
+
+**Important Instructions:**
+1. **Preserve Data:** Do NOT alter any data points, values, or quantitative information in the plot.
+2. **Apply Suggestions:** Enhance the visual aesthetics according to the provided suggestions (colors, fonts, layout, etc.).
+3. **Maintain Accuracy:** Ensure all numerical values and relationships remain accurate.
+4. **Professional Quality:** Ensure the output meets publication standards for top-tier conferences.
+
+## OUTPUT
+Generate a polished plot image that maintains the original data while applying the improvement suggestions.
+"""
+
+_STYLE_GUIDE_DIR = Path(__file__).parent / "style_guides"
+
+
+def _load_style_guide(task_type: str) -> str:
+    """Load style guide from file based on task type (diagram or plot)."""
+    filename = f"neurips2025_{task_type}_style_guide.md"
+    filepath = _STYLE_GUIDE_DIR / filename
+    try:
+        return filepath.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ""
 
 
 class PolishAgent(BaseAgent):
@@ -49,7 +76,7 @@ class PolishAgent(BaseAgent):
 
         await self.emit(on_event, "stage", {"name": "polish", "status": "running", "progress": 0.85})
 
-        style_guide = STYLE_GUIDE_DIAGRAM if task_type == "diagram" else STYLE_GUIDE_PLOT
+        style_guide = _load_style_guide(task_type)
         suggestion_system = DIAGRAM_SUGGESTION_SYSTEM if task_type == "diagram" else PLOT_SUGGESTION_SYSTEM
 
         # Step 1: Generate suggestions
@@ -83,10 +110,11 @@ class PolishAgent(BaseAgent):
         # Step 2: Generate polished image (pass original image to model)
         await self.emit(on_event, "intermediate", {"type": "text", "stage": "polish", "content": "Generating polished image..."})
 
-        polish_prompt = f"Polish this image based on these suggestions:\n\n{suggestions}\n\nGenerate an improved version:"
+        polish_system = DIAGRAM_POLISH_SYSTEM if task_type == "diagram" else PLOT_POLISH_SYSTEM
+        polish_prompt = f"Please polish this image based on the following suggestions:\n\n{suggestions}\n\nPolished Image:"
         polished_bytes = None
 
-        aspect_ratio = data.get("aspect_ratio", "1:1")
+        aspect_ratio = data.get("aspect_ratio", "16:9")
         image_size = data.get("image_size", "1k")
 
         # Try image-to-image first (passes original image to model)

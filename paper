@@ -1,0 +1,220 @@
+\documentclass[runningheads]{llncs}
+
+% ---------------------------------------------------------------
+% Include basic ECCV package
+ 
+% TODO REVIEW: Insert your submission number below by replacing '*****'
+% TODO FINAL: Comment out the following line for the camera-ready version
+\usepackage[review,year=2026,ID=12105]{eccv}
+% TODO FINAL: Un-comment the following line for the camera-ready version
+%\usepackage{eccv}
+
+% OPTIONAL: Un-comment the following line for a version which is easier to read
+% on small portrait-orientation screens (e.g., mobile phones, or beside other windows)
+%\usepackage[mobile]{eccv}
+
+
+% ---------------------------------------------------------------
+% Other packages
+
+% Commonly used abbreviations (\eg, \ie, \etc, \cf, \etal, etc.)
+\usepackage{eccvabbrv}
+\usepackage{multirow}
+% Include other packages here, before hyperref.
+\usepackage{graphicx}
+\usepackage{booktabs}
+
+% The "axessiblity" package can be found at: https://ctan.org/pkg/axessibility?lang=en
+\usepackage[accsupp]{axessibility}  % Improves PDF readability for those with disabilities.
+
+
+\usepackage[dvipsnames]{xcolor}
+\newcommand\clr[1]{{\color{purple}{#1}}}
+\newcommand\cll[1]{{\color{teal}{#1}}}
+\newcommand{\boxin}[1]{\textcolor[rgb]{0.6,0.6,0.2}{{[Boxin: #1]}}}
+\newcommand{\ffc}[1]{\textcolor{ForestGreen}{{[Feifan: #1]}}}
+\newcommand{\ff}[1]{\textcolor{ForestGreen}{{#1}}}
+
+\newcommand{\settablefont}{\fontsize{5.0}{9.0}\selectfont}
+% ---------------------------------------------------------------
+% Hyperref package
+
+% It is strongly recommended to use hyperref, especially for the review version.
+% Please disable hyperref *only* if you encounter grave issues.
+% hyperref with option pagebackref eases the reviewers' job, but should be disabled for the final version.
+%
+% If you comment hyperref and then uncomment it, you should delete
+% main.aux before re-running LaTeX.
+% (Or just hit 'q' on the first LaTeX run, let it finish, and you
+%  should be clear).
+
+% TODO FINAL: Comment out the following line for the camera-ready version
+%\usepackage[pagebackref,breaklinks,colorlinks,citecolor=eccvblue]{hyperref}
+% TODO FINAL: Un-comment the following line for the camera-ready version
+\usepackage{hyperref}
+
+% Support for ORCID icon
+\usepackage{orcidlink}
+
+
+\begin{document}
+
+% ---------------------------------------------------------------
+% TODO REVIEW: Replace with your title
+% Beyond Data Generation: Propagating Human Corrections along Failure Boundaries via Digital Twins for Robotic Manipulation
+% Beyond Data Generation: Digital Twins as Correction Amplifiers for Real-World Robotic Manipulation
+% Beyond Data Generation: Digital Twins as Correction Amplifiers for Efficient Robotic Manipulation
+\title{Twin-DAgger: Synergizing Digital Twins and Human Corrections for Efficient Robot Manipulation} 
+
+% TODO REVIEW: If the paper title is too long for the running head, you can set
+% an abbreviated paper title here. If not, comment out.
+% \titlerunning{Abbreviated paper title}
+
+% TODO FINAL: Replace with your author list. 
+% Include the authors' OCRID for the camera-ready version, if at all possible.
+\author{First Author\inst{1}\orcidlink{0000-1111-2222-3333} \and
+Second Author\inst{2,3}\orcidlink{1111-2222-3333-4444} \and
+Third Author\inst{3}\orcidlink{2222--3333-4444-5555}}
+
+% TODO FINAL: Replace with an abbreviated list of authors.
+\authorrunning{F.~Author et al.}
+% First names are abbreviated in the running head.
+% If there are more than two authors, 'et al.' is used.
+
+% TODO FINAL: Replace with your institution list.
+\institute{Princeton University, Princeton NJ 08544, USA \and
+Springer Heidelberg, Tiergartenstr.~17, 69121 Heidelberg, Germany
+\email{lncs@springer.com}\\
+\url{http://www.springer.com/gp/computer-science/lncs} \and
+ABC Institute, Rupert-Karls-University Heidelberg, Heidelberg, Germany\\
+\email{\{abc,lncs\}@uni-heidelberg.de}}
+
+\maketitle
+
+% 分布偏移是OOD的子集，DAgger解决的应该是Induced OOD，或者说distribution shift
+\begin{abstract}
+Imitation learning has shown significant potential for advancing embodied intelligence. However, its efficacy is fundamentally constrained by the high cost of acquiring expert demonstrations and the compounding execution errors known as distribution shift. While digital twin technologies enable the low-cost generation of diverse synthetic data, existing methods typically rely on uniformly sampled simulation rollouts. This often leads to models that overfit to trivial behavioral patterns while failing to master the critical, high-difficulty task phases that are essential for robust manipulation. Conversely, Dataset Aggregation (DAgger) mitigates distribution shift through interactive human corrections; yet, its conventional "one-demonstration-per-trajectory" paradigm remains sample-inefficient and lacks sufficient trajectory diversity for complex tasks.
+To address these issues, we propose Twin-DAgger, a framework that synergizes these paradigms by evolving the digital twin from a naive data source into an "explore-correct-augment" learning pipeline.
+Specifically, Twin-DAgger utilizes DAgger as a real-world probe to identify critical failure points, which then serve as targeted anchors for digital twin augmentation. To further alleviate distribution shift, we introduce a dual-path task-focus strategy, which incorporates both spatial-aware and temporal-aware mechanisms, specifically designed to amplify the most challenging task boundaries identified during the DAgger process. Our Twin-DAgger pipeline enables the distillation of a singular human correction into a manifold of diverse, high-utility training samples. Notably, Twin-DAgger matches the performance of conventional real-world expert correction with only 10\% of the intervention cost, significantly outperforming uniform digital twin baselines under equivalent data budgets.
+
+
+
+\keywords{robotics \and imitation learning \and digital twins}
+\end{abstract}
+
+\section{Introduction}
+\label{sec:intro}
+
+
+Imitation learning \cite{zitkovich2023rt} has emerged as a scalable paradigm for robot manipulation, enabling policies to acquire complex visuomotor skills directly from expert demonstrations. Recent advances have demonstrated remarkable success across diverse real-world tasks, particularly in long-horizon tasks \cite{chi2025diffusion,black2024pi_0} and high-precision operations \cite{zhao2023learning}. However, learned policies often struggle to inherit the full breadth of human expertise about the physical world. When deployed in out-of-distribution (OOD) scenarios unseen during training, these policies are highly susceptible to compounding execution errors \cite{zhang2024diffusion}. This phenomenon is known as distribution shift \cite{xucompliant} and often cascades into catastrophic task failure.
+
+
+Dataset Aggregation (DAgger) \cite{ross2011reduction} mitigates distribution shift by introducing human corrections during deployment, but this approach faces significant practical hurdles. Conventional DAgger performs in real world, which remains highly inefficient \cite{xucompliant}, because each costly intervention yields only a single corrective trajectory. This one-to-one ratio between expert effort and data production is insufficient to capture the vast diversity of potential OOD failures. Furthermore, the high costs of expert labor and hardware maintenance make large-scale data collection through this method prohibitively expensive. Because corrections only occur when the robot happens to encounter a failure, there is no proactive mechanism to efficiently address all vulnerable regions of the task space, limiting the robot's ability to generalize to new OOD conditions.
+
+One promising way to alleviate these constraints is through Digital Twin (DT) techniques \cite{yu2025real2render2real,lim2022real2sim2real}, which can generate synthetic training data at scale. Nevertheless, existing DT pipelines often rely on uniform augmentation strategies \cite{mandlekar2023mimicgen,robosplat2025} that treat every region of the task space as equally important. This approach does not adequately cover the specific OOD scenarios in which the distribution shift is more likely to occur, often neglecting the fragile boundaries of tasks where small perturbations lead to failure \cite{corrado2023guided}. Because the resulting training data are dominated by easy and already-solvable configurations, the policies remain unreliable in the difficult regions where robustness is most critical.
+
+Our key observation \boxin{is only claimed if it is the key to solve the problem (and newly proposed by us). It seems here you are citing something already exists.} is that human interventions during robot learning carry far richer information than a single trajectory label because they reveal both where in the task space the policy is vulnerable and when along the execution those failures occur \boxin{Be careful about this claim. or add some citation if existing paper already mention this.}. Two fundamental patterns support this observation \boxin{If there are two, clearly list them as 1) ... 2) ... Now it's hard to find from the texts following.}. Spatially, policy performance is rarely uniform across the workspace. Even with randomized training data, specific failure-prone regions persist where slight environmental variations cause execution errors. These regions are far more valuable for learning than configurations the policy already handles well. Temporally, human corrections tend to be brief and decisive. Adjustments often involve a quick grasp correction or contact stabilization rather than a full-task takeover. These short windows mark the hardest moments in the execution timeline \cite{mandlekar2020human}. We argue that these signals should not be treated as byproducts of data collection, but rather as a guide for concentrating data generation on the specific regions and timesteps that need them most.
+
+To this end, we propose \textbf{Twin-DAgger}, a framework that unifies the corrective signal of DAgger with the scalability of digital twins through an \textbf{``explore-correct-augment''} pipeline. Specifically, we first reconstruct high-fidelity task scenes in the digital twin by capturing real-world manipulation contexts. We then initiate the explore phase by running the DAgger process as a probe to expose policy weaknesses and locate failure boundaries in the real-world workspace. Through this process, we extract signals containing spatial and temporal annotations of high-failure-rate regions. Leveraging these signals, we introduce a \textbf{dual-axis priority sampling strategy} that integrates workspace success-rate mapping with trajectory segmentation based on intervention timing, thereby isolating high-risk spatial regions and critical temporal windows to pinpoint the precise boundaries of policy vulnerability. This strategy guides the augment phase, where we perform augmentation in the digital twin to concentrate diverse rollouts around these identified failure boundaries. Through this pipeline, a single human correction is expanded into a diverse set of high-utility training samples that target the policy's actual failure modes. Empirical evaluations demonstrate that Twin-DAgger outperforms both standard digital twin methods and conventional real-world DAgger while using only ten percent of the human intervention budget.
+
+The primary contributions of this work are threefold: 
+\boxin{the first and second items have some redundancy with the texts about, need to be more concise, later...}
+\begin{itemize} 
+\item We introduce Twin-DAgger, an explore-correct-augment framework that amplifies each human intervention into a diverse set of targeted digital twin demonstrations, reducing human annotation cost while improving policy robustness.
+\item We design a dual-axis augmentation strategy that concentrates synthetic data generation around failure-prone spatial regions and critical temporal windows identified from expert corrections, ensuring each intervention produces training samples where the policy needs them most. 
+\item Through experiments on real-world manipulation tasks, including pick and place \boxin{pick-and-place?} and complex peg insertion, we demonstrate that Twin-DAgger outperforms both standard digital twin methods and conventional real-world DAgger baselines using only 10\% of the human intervention budget. 
+\end{itemize}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+\section{Related Work}
+\label{sec:related_work}
+
+\subsection{Imitation Learning}
+\subsubsection{Behavior Cloning.} Behavior cloning learns visuomotor policies by directly mimicking expert demonstrations. ALOHA \cite{zhao2023learning} employs temporal action chunking with transformer architectures to enable precise bimanual manipulation on dexterous tasks. Diffusion Policy \cite{chi2025diffusion} reformulates action prediction as conditional denoising diffusion, effectively capturing multi-modal action distributions for complex manipulation. RISE \cite{fang2025airexo} integrates 2D semantic features from vision foundation models with 3D geometric representations through spatial alignment, generating actions via Transformer-based \cite{vaswani2017attention} decoder and diffusion-based \cite{ho2020denoising} heads. 
+\subsubsection{Vision-Language-Action (VLA) Models.} Recent work has scaled up imitation learning by pre-training on large, heterogeneous robot datasets. The RT series \cite{brohan2023rt,zitkovich2023rt} demonstrate that pre-training on diverse multi-robot datasets (Open X-Embodiment) \cite{o2024open} enables strong zero-shot generalization to novel tasks and embodiments. OpenVLA \cite{kimopenvla} provides an open-source VLA architecture that combines Internet-scale vision-language data with robot demonstrations for rapid task adaptation. The $\pi$ series \cite{black2024pi_0,intelligence2025pi_} introduce flow matching-based VLA models designed for general-purpose manipulation across diverse robot platforms. Despite their generalization capabilities, these models still require massive amounts of diverse real-world data and remain susceptible to compounding errors in out-of-distribution conditions where training data is sparse.
+\subsubsection{Interactive Learning and Dataset Aggregation.} To address distribution shift, DAgger \cite{ross2011reduction} proposes an iterative framework where expert corrections are collected on states visited by the learned policy, ensuring the policy learns to recover from its own mistakes. DMD \cite{zhang2024diffusion} combines diffusion-based policies with DAgger for eye-in-hand manipulation, demonstrating significant robustness improvements in contact-rich scenarios through interactive corrections. CR-DAgger \cite{xucompliant} introduces compliant control during human interventions to collect more informative demonstrations for contact-rich manipulation tasks. However, conventional DAgger methods suffer from a critical efficiency bottleneck: each costly human intervention produces only a single corrective trajectory, yielding insufficient trajectory diversity to cover the wide range of potential failure modes in complex manipulation tasks. Our work addresses this limitation by transforming each intervention into a manifold of diverse, high-utility training samples through targeted DT augmentation.
+
+\subsection{Digital Twins}
+\subsubsection{Digital Twin Construction and Sim-to-Real Transfer.}
+DT technologies construct high-fidelity virtual replicas of real-world environments, enabling scalable generation of synthetic training data. RoboTwin \cite{mu2025robotwin} presents a procedural generation framework for synthesizing diverse task variations within digital twin environments, supporting robust bimanual policy training. TwinAligner \cite{fan2025twinaligner} addresses the visual-dynamic alignment challenge by reconstructing simulation environments that match both photorealistic appearance and physical dynamics of real-world scenes, enabling reliable sim-to-real policy transfer. Twin RL-VLA \cite{xu2026twinrl} leverages digital twins for reinforcement learning-based exploration, using simulation rollouts to refine VLA models before real-world deployment. RialTo \cite{torne2024reconciling} proposes iterative refinement of digital twin parameters through real-world feedback to progressively minimize the reality gap.
+\subsubsection{Data Augmentation in Digital Twins.}
+Recent work leverages digital twins as powerful engines to expand limited real-world datasets through synthetic data augmentation. RoboSplat \cite{robosplat2025} utilizes 3D Gaussian Splatting \cite{kerbl20233d} to construct photorealistic virtual environments, enabling robust one-shot manipulation by varying object poses and camera viewpoints. Similarly, MimicGen \cite{mandlekar2023mimicgen} automates the generation of diverse demonstrations via object-centric spatial and temporal transformations within simulation. Furthermore, Sim-and-Real Co-Training \cite{maddukuri2025simandreal} demonstrates that blending digital twin rollouts with real-world collections significantly bolsters policy generalization and robustness.
+Despite these advances, these approaches often fail to adequately cover the critical failure boundaries where distribution shift is most acute, resulting in training data dominated by easily solvable configurations. Moreover, these methods remain decoupled from human expert feedback, missing the opportunity to use interactive corrections as a guide. 
+\ffc{Say ``In contrast, our methods...''}
+
+% Twin-DAgger bridges this gap by unifying DAgger’s corrective signals with the scalability of digital twins, transforming sparse human interventions into targeted spatial and temporal augmentations precisely where the policy struggles.
+
+
+
+
+\section{Methodology}
+\label{sec:method}
+
+\subsection{Twin-DAgger framework}
+The Twin-DAgger framework is designed to address the prohibitive cost of data acquisition and the lack of robustness at critical task boundaries in imitation learning by transforming sparse human corrections into density-aware, targeted synthetic data manifolds within a digital twin \boxin{This is a good sentence to summarize the uniqueness of Twin-DAgger, but it seems that it was not reflected in intro.}. As illustrated in Fig. \ref{fig:pipeline}, the system operates as an "explore-correct-augment" pipeline. The core idea is to treat each human-provided correction not merely as a single data point, but as a topological seed to anchor a manifold of synthetic but physically consistent trajectories.
+
+Specifically, we first deploy a base policy (trained on initial teleoperation data) for real-world inference to actively identify failures. When OOD scenarios occur, a human expert provides high-quality corrective data through DAgger interventions. These real-world scenes and trajectories are then reconstructed within a digital twin to undergo our dual-path augmentation strategy. For the spatial path, we perform Focal-Scale Stratified Sampling based on a task difficulty map derived from success rates, where regions with different difficulty levels generate a corresponding number of augmented samples. For the temporal path, we expand the trajectories of the DAgger intervention segments by injecting localized perturbations at the intervention start to perform Temporal-Focal Trajectory Expansion. Through this Twin-DAgger framework, we obtain high-quality digital twin data that is both region-aware and temporal-aware, effectively bridging the gap between sparse expert corrections and robust policy deployment.
+
+\subsection{DAgger-Based Data Acquisition and Simulated Augmentation}
+In the implementation of the Twin-DAgger framework, we first developed a Virtual Reality (VR)-based interactive data acquisition interface for the efficient collection of corrective data targeting Out-of-Distribution (OOD) scenarios. During the deployment and inference of the base policy, an expert monitors the robot's operational status in real-time via a VR device. Upon observing anomalous behaviors—such as prolonged freezing, severe jittering, or significant deviation from the target trajectory—the expert can instantaneously switch from autonomous inference to teleoperation mode by pressing a specific button on the controller. Under this sparse correction mechanism, the expert is not required to demonstrate the entire task; instead, they only provide a short, critical corrective segment to steer the robot back to the expert manifold or a recoverable state. Once the task returns to the normal path, the expert can release control, allowing the model to resume autonomous inference. This design not only significantly reduces the expert's workload but also ensures that each collected trajectory serves as high-quality OOD corrective data specifically addressing the model's vulnerabilities.
+
+To support subsequent digital twin replay and data augmentation, we utilize the ManiSkill  simulator \cite{ManiSkill3_24} to construct a virtual environment highly aligned with reality. Regarding robot modeling, we import the URDF model of the robot into the simulation and configure it as an articulation. By feeding the joint angle sequences recorded from the real robot into the controller to drive the respective links, we achieve smooth and consistent motion replay within the simulation space. For scene reconstruction, we reconstruct 3D meshes of the workspace and objects through multi-view scanning and integrate FoundationPose \cite{wen2024foundationpose} for object pose tracking, ensuring precise initial pose alignment between the simulated and real-world scenes. Furthermore, during the rendering of in-hand and third-person view images, we dynamically randomize the background far-field colors for each data segment. This effectively encourages the model to focus its visual attention on the task-relevant workspace and end-effector interaction details, thereby fully extracting high-quality Real2Sim value from the DAgger corrective data.
+
+Upon completing data synchronization, we perform large-scale augmentation of the DAgger data within the simulation platform to further enhance data diversity. First, regarding environmental lighting, we configure various combinations of light sources, including ambient light, directional light, and point lights, obtaining visual data with diverse illumination characteristics through randomized parameters. For the core object-centric augmentation, we implement an Object-Centric Trajectory Warping method that maps the original expert trajectory $\tau$ to a randomly generated target object pose $P_{aug}$. \boxin{Use non-italic fonts for subscripts (like avg.) for indicating the meaning (not the index like $i$, $j$)} For each augmented segment, we randomly sample a translation offset $\Delta p = (\Delta x, \Delta y)$ and a rotation angle $\Delta \theta_z$ around the vertical axis within the operation plane, transforming the object's pose from its initial position $P_{init}$ to $P_{aug}$.
+
+To ensure the motion continuity and physical feasibility of the robot during the warping process, we introduce a dynamic rotation center $c_t$ that varies with task progress. During the approach phase (pre-grasp), if the target object is translated by a distance $x$ along the vector $d$, we apply linear corrections to the $N$ trajectory frames preceding the grasp. Specifically, the $i$-th trajectory point is modified by adding an additional translation offset of $\frac{i}{N} \cdot x$ along direction $d$ to its original pose. This design ensures the gripper precisely reaches the augmented object's actual position at the $N$-th frame (the grasping moment) while effectively avoiding discontinuities at the trajectory's starting point. Simultaneously, the end-effector orientation undergoes a gradual transition from its initial state to the target rotation increment using Spherical Linear Interpolation (Slerp) \cite{shoemake1985animating}, achieving a smooth transition based on the current frame progress $t = \frac{i}{N}$.
+
+During the transport phase (post-grasp), the trajectory gradually returns to the original delivery path to ensure the precision of the final placement. For all trajectory points following the grasp, a uniform spatial transformation $T_{aug}$—consistent with the object's displacement—is applied to maintain a fixed relative pose between the object and the end-effector, thereby ensuring a high task success rate. Additionally, to prevent joint flipping in the 7-DOF redundant robot during Inverse Kinematics (IK) computation, we adopt an iterative solving scheme that utilizes the previous frame's solution as the initial seed. For each point $x_t$ in the trajectory, the solver performs numerical optimization using the joint configuration $q_{t-1}$ from frame $t-1$ as the starting point: 
+\begin{equation}
+    q_t = \text{IK}(x_t, \text{initial\_qpos} = q_{t-1})
+\end{equation}
+This strategy enforces constraints on inter-frame joint displacement, resulting in highly smooth and physically executable trajectories in joint space. Through this implementation, we can generate a vast number of augmented samples from a single DAgger demonstration, significantly improving the acquisition and utilization efficiency of corrective data.
+
+\subsection{Focal-Scale Stratified Sampling}
+
+
+\section{Experiments}
+\label{sec:exp}
+
+
+
+\section{Conclusion}
+
+\clearpage  % TODO FINAL: This \clearpage needs to be removed from both review and camera-ready versions.
+
+%\section*{Acknowledgements}
+%Please insert your acknowledgments here.
+
+% ---- Bibliography ----
+%
+% BibTeX users should specify bibliography style 'splncs04'.
+% References will then be sorted and formatted in the correct style.
+%
+\bibliographystyle{splncs04}
+\bibliography{main}
+\end{document}

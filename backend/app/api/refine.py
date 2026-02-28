@@ -3,7 +3,8 @@
 import base64
 import logging
 import os
-import uuid
+import uuid as _uuid
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -11,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.database import get_db
+from app.models.generation import GenerationResult, GenerationTask
 from app.models.user import User
 from app.api.deps import get_current_user
 
@@ -51,59 +53,32 @@ async def _generate_image_with_input(
 ) -> Optional[bytes]:
     """Generate an image using multimodal input (text + images).
 
-    Strategy:
-    1. Try image_lb.generate_image_with_input if available (native image gen with input)
-    2. Fall back to chat_lb.chat_with_images for models that support image output
-       (e.g., Gemini 2.0 Flash with response_modalities=["IMAGE"])
-    3. Fall back to image_lb.generate_image with prompt only (loses input images)
+    Uses generate_image_with_images which handles both Gemini native and
+    OpenAI-compat providers. Falls back to text-only generation only if
+    the method is not supported at all (AttributeError/NotImplementedError).
     """
-    # Build multimodal contents: prompt text + input images
-    contents = [prompt]
-    for img in input_images:
-        contents.append({
-            "type": "image_base64",
-            "data": img["b64"],
-            "media_type": img.get("media_type", "image/png"),
-        })
-
-    # Strategy 1: Try Gemini-style native image generation with input images
     lb = image_lb or chat_lb
-    if lb:
-        try:
-            result_bytes = await lb.generate_image_with_images(
-                prompt=prompt,
-                images=input_images,
-                aspect_ratio=aspect_ratio,
-                image_size=image_size,
-            )
-            if result_bytes:
-                return result_bytes
-        except (AttributeError, NotImplementedError):
-            pass
-        except Exception as e:
-            logger.warning(f"generate_image_with_images failed: {e}")
+    if not lb:
+        return None
 
-    # Strategy 2: Use chat_with_images and extract image from response
-    if chat_lb:
-        try:
-            result_bytes = await chat_lb.generate_image_from_chat(
-                contents=contents,
-                aspect_ratio=aspect_ratio,
-                image_size=image_size,
-            )
-            if result_bytes:
-                return result_bytes
-        except (AttributeError, NotImplementedError):
-            pass
-        except Exception as e:
-            logger.warning(f"generate_image_from_chat failed: {e}")
+    # Primary: image-to-image generation (passes original image to model)
+    try:
+        result_bytes = await lb.generate_image_with_images(
+            prompt=prompt,
+            images=input_images,
+            aspect_ratio=aspect_ratio,
+            image_size=image_size,
+        )
+        if result_bytes:
+            return result_bytes
+    except (AttributeError, NotImplementedError):
+        logger.info("generate_image_with_images not supported, trying fallback")
+    except Exception as e:
+        logger.warning(f"generate_image_with_images failed: {e}")
 
-    # Strategy 3: Fallback — pure text prompt (loses input images)
-    if lb:
-        logger.warning("Falling back to text-only image generation (input images not used)")
-        return await lb.generate_image(prompt=prompt, aspect_ratio=aspect_ratio, image_size=image_size)
-
-    return None
+    # Fallback: text-only image generation (loses input images)
+    logger.warning("Falling back to text-only image generation (input images not used)")
+    return await lb.generate_image(prompt=prompt, aspect_ratio=aspect_ratio, image_size=image_size)
 
 
 @router.post("/enhance")
@@ -125,6 +100,7 @@ async def enhance_image(
     aspect_ratio: Target aspect ratio — "16:9", "4:3", "3:4", "1:1", "9:16".
     """
     content = await image.read()
+    modelSel_image = image_model_name  # capture for history
 
     from app.services.generation_service import _build_load_balancer
     image_lb = await _build_load_balancer(db, user.id, "image", key_id=image_key_id, model_name=image_model_name)
@@ -150,9 +126,10 @@ async def enhance_image(
     if not enhanced_bytes:
         raise HTTPException(status_code=500, detail="增强失败：未生成图片")
 
-    # Save result
-    task_id = uuid.uuid4().hex[:12]
-    task_dir = os.path.join(settings.UPLOAD_DIR, "refine", task_id)
+    # Save result files
+    task_id = _uuid.uuid4()
+    short_id = task_id.hex[:12]
+    task_dir = os.path.join(settings.UPLOAD_DIR, "refine", short_id)
     os.makedirs(task_dir, exist_ok=True)
 
     out_path = os.path.join(task_dir, "enhanced.png")
@@ -163,10 +140,28 @@ async def enhance_image(
     with open(orig_path, "wb") as f:
         f.write(content)
 
+    # Save to history
+    now = datetime.now(timezone.utc)
+    task_record = GenerationTask(
+        id=task_id, user_id=user.id, task_type="refine_enhance",
+        content=instruction, visual_intent=f"{resolution} · {aspect_ratio}",
+        pipeline_mode="enhance", status="completed",
+        image_model=modelSel_image or None,
+        started_at=now, completed_at=now, progress=1.0,
+    )
+    db.add(task_record)
+    await db.flush()
+    result_record = GenerationResult(
+        task_id=task_id, user_id=user.id, candidate_index=0,
+        image_path=f"refine/{short_id}/enhanced.png",
+    )
+    db.add(result_record)
+    await db.commit()
+
     return {
-        "task_id": task_id,
-        "original_url": f"/uploads/refine/{task_id}/original.png",
-        "enhanced_url": f"/uploads/refine/{task_id}/enhanced.png",
+        "task_id": short_id,
+        "original_url": f"/uploads/refine/{short_id}/original.png",
+        "enhanced_url": f"/uploads/refine/{short_id}/enhanced.png",
     }
 
 
@@ -190,6 +185,7 @@ async def style_transfer(
     """
     source_bytes = await source_image.read()
     ref_bytes = await reference_image.read()
+    modelSel_image = image_model_name  # capture for history
 
     from app.services.generation_service import _build_load_balancer
     image_lb = await _build_load_balancer(db, user.id, "image", key_id=image_key_id, model_name=image_model_name)
@@ -219,8 +215,9 @@ async def style_transfer(
     if not result_bytes:
         raise HTTPException(status_code=500, detail="风格迁移失败：未生成图片")
 
-    task_id = uuid.uuid4().hex[:12]
-    task_dir = os.path.join(settings.UPLOAD_DIR, "refine", task_id)
+    task_id = _uuid.uuid4()
+    short_id = task_id.hex[:12]
+    task_dir = os.path.join(settings.UPLOAD_DIR, "refine", short_id)
     os.makedirs(task_dir, exist_ok=True)
 
     with open(os.path.join(task_dir, "source.png"), "wb") as f:
@@ -230,9 +227,27 @@ async def style_transfer(
     with open(os.path.join(task_dir, "result.png"), "wb") as f:
         f.write(result_bytes)
 
+    # Save to history
+    now = datetime.now(timezone.utc)
+    task_record = GenerationTask(
+        id=task_id, user_id=user.id, task_type="refine_style",
+        visual_intent=f"{resolution} · {aspect_ratio}",
+        pipeline_mode="style-transfer", status="completed",
+        image_model=modelSel_image or None,
+        started_at=now, completed_at=now, progress=1.0,
+    )
+    db.add(task_record)
+    await db.flush()
+    result_record = GenerationResult(
+        task_id=task_id, user_id=user.id, candidate_index=0,
+        image_path=f"refine/{short_id}/result.png",
+    )
+    db.add(result_record)
+    await db.commit()
+
     return {
-        "task_id": task_id,
-        "source_url": f"/uploads/refine/{task_id}/source.png",
-        "reference_url": f"/uploads/refine/{task_id}/reference.png",
-        "result_url": f"/uploads/refine/{task_id}/result.png",
+        "task_id": short_id,
+        "source_url": f"/uploads/refine/{short_id}/source.png",
+        "reference_url": f"/uploads/refine/{short_id}/reference.png",
+        "result_url": f"/uploads/refine/{short_id}/result.png",
     }

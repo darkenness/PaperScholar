@@ -161,12 +161,13 @@ async def _save_event(db: AsyncSession, task_id: uuid.UUID, event_type: str, eve
     await db.commit()
 
 
-async def run_generation_task(task_id: uuid.UUID):
+async def run_generation_task(task_id: uuid.UUID, extra_params: Optional[dict] = None):
     """Execute a generation task in the background.
 
     This function is meant to be called from a background worker (Celery)
     or via asyncio.create_task(). It manages its own DB session.
     """
+    extra_params = extra_params or {}
     async with AsyncSessionLocal() as db:
         # Load task
         result = await db.execute(select(GenerationTask).where(GenerationTask.id == task_id))
@@ -197,14 +198,17 @@ async def run_generation_task(task_id: uuid.UUID):
             if not image_lb:
                 # Fall back to chat LB for image if no dedicated image keys
                 image_lb = chat_lb
-                # Warn if the fallback provider doesn't support image generation
+                logger.warning(
+                    "No dedicated image API keys configured. Using chat LB as image fallback. "
+                    "For best results, configure a dedicated image model key (e.g., Gemini image model)."
+                )
+                # Warn if the fallback provider doesn't support image generation at all
                 if chat_lb and chat_lb._states:
                     provider = chat_lb._states[0].config.provider
                     if provider == "anthropic":
-                        logger.warning(
-                            "No dedicated image API keys configured. Falling back to Anthropic chat LB, "
-                            "but Anthropic does not support image generation. "
-                            "Diagram generation will fail silently. Please add a Gemini or OpenAI image key."
+                        logger.error(
+                            "Anthropic does not support image generation. "
+                            "Diagram generation WILL FAIL. Please add a Gemini or OpenAI image key."
                         )
 
             # Record model info
@@ -231,11 +235,14 @@ async def run_generation_task(task_id: uuid.UUID):
 
             async def on_event(event_type: str, event_data: dict):
                 async with _event_lock:
-                    await _save_event(db, task_id, event_type, event_data)
+                    # Ensure progress never regresses (monotonic increase guard)
                     if "progress" in event_data:
+                        if event_data["progress"] < task.progress:
+                            event_data["progress"] = task.progress
                         task.progress = event_data["progress"]
                     if "name" in event_data:
                         task.current_stage = event_data.get("name")
+                    await _save_event(db, task_id, event_type, event_data)
                     await db.commit()
 
             # Prepare pipeline data
@@ -245,6 +252,9 @@ async def run_generation_task(task_id: uuid.UUID):
                 "aspect_ratio": task.aspect_ratio or "1:1",
                 "task_type": task.task_type or "diagram",
                 "retrieval_setting": task.retrieval_setting or "auto",
+                "retriever_content_limit": extra_params.get("retriever_content_limit"),
+                "retriever_top_k": extra_params.get("retriever_top_k", 10),
+                "retriever_pool_size": extra_params.get("retriever_pool_size"),
             }
 
             # Run pipeline with num_candidates support

@@ -1,4 +1,15 @@
-"""Prompt templates for statistical plot generation pipeline agents."""
+"""Prompt templates for statistical plot generation pipeline agents.
+
+DEPRECATED: These prompts are no longer used by the pipeline.
+The canonical prompts are now defined directly in:
+  - backend/app/agents/pipeline.py (Planner, Stylist, Critic, Vanilla system prompts)
+  - backend/app/agents/retriever_agent.py (Retriever system prompts)
+  - backend/app/prompts/eval_prompts.py (Evaluation prompts)
+
+Style guides are loaded from files in backend/app/agents/style_guides/.
+
+Version: v0 (original simplified prompts, superseded by PaperBanana full prompts)
+"""
 
 PLOT_PLANNER_SYSTEM = """You are an expert statistical data visualization planner. Given raw data (tabular/JSON) and a visual intent, produce a detailed description of the target statistical plot.
 

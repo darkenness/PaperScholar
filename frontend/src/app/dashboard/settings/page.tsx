@@ -20,6 +20,17 @@ export default function SettingsPage() {
   const [formError, setFormError] = useState('');
   const [saving, setSaving] = useState(false);
 
+  // Edit form
+  const [editingKey, setEditingKey] = useState<any>(null);
+  const [editBaseUrl, setEditBaseUrl] = useState('');
+  const [editApiKey, setEditApiKey] = useState('');
+  const [editModelName, setEditModelName] = useState('');
+  const [editError, setEditError] = useState('');
+  const [editSaving, setEditSaving] = useState(false);
+
+  // Verify loading state
+  const [verifyingId, setVerifyingId] = useState<number | null>(null);
+
   // Application
   const [appReason, setAppReason] = useState('');
   const [appLoading, setAppLoading] = useState(false);
@@ -60,16 +71,42 @@ export default function SettingsPage() {
   };
 
   const handleVerify = async (id: number) => {
+    setVerifyingId(id);
     try {
       const res = await apiKeysApi.verify(id);
       alert(res.message);
       await loadKeys();
     } catch (e: any) { alert(e.message); }
+    setVerifyingId(null);
   };
 
   const handleDelete = async (id: number) => {
     if (!confirm('确定删除此 API Key？')) return;
     try { await apiKeysApi.delete(id); await loadKeys(); } catch { }
+  };
+
+  const openEdit = (k: any) => {
+    setEditingKey(k);
+    setEditBaseUrl(k.base_url || '');
+    setEditApiKey('');
+    setEditModelName(k.model_name || '');
+    setEditError('');
+  };
+
+  const handleEdit = async () => {
+    if (!editingKey) return;
+    if (editApiKey && editApiKey.length < 10) { setEditError('API Key 长度不足（至少10位）'); return; }
+    setEditSaving(true); setEditError('');
+    try {
+      const payload: any = {};
+      if (editBaseUrl !== (editingKey.base_url || '')) payload.base_url = editBaseUrl;
+      if (editApiKey) payload.api_key = editApiKey;
+      if (editModelName !== (editingKey.model_name || '')) payload.model_name = editModelName;
+      await apiKeysApi.update(editingKey.id, payload);
+      setEditingKey(null);
+      await loadKeys();
+    } catch (e: any) { setEditError(e.message); }
+    setEditSaving(false);
   };
 
   const handleApply = async () => {
@@ -90,20 +127,34 @@ export default function SettingsPage() {
       ) : (
         <div className="divide-y divide-[var(--border-subtle)]">
           {keys.map((k: any) => (
-            <div key={k.id} className="px-5 py-3 flex items-center justify-between hover:bg-[var(--bg-hover)] transition-colors">
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-[var(--text-primary)]">{k.provider}</span>
-                  {k.model_name && <span className="text-xs text-[var(--text-muted)]">· {k.model_name}</span>}
-                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${k.is_verified ? 'bg-green-500/20 text-green-400' : 'bg-yellow-500/20 text-yellow-400'}`}>
-                    {k.is_verified ? '已验证' : '未验证'}
-                  </span>
+            <div key={k.id} className="px-5 py-3 hover:bg-[var(--bg-hover)] transition-colors">
+              <div className="flex items-center justify-between">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm font-medium text-[var(--text-primary)]">{k.provider}</span>
+                    {k.model_name && <span className="text-xs text-[var(--text-muted)]">· {k.model_name}</span>}
+                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${k.is_verified ? 'bg-green-500/20 text-green-400' : 'bg-yellow-500/20 text-yellow-400'}`}>
+                      {k.is_verified ? '已验证' : '未验证'}
+                    </span>
+                    {!k.is_enabled && (
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-gray-500/20 text-gray-400">已禁用</span>
+                    )}
+                  </div>
+                  <div className="text-xs text-[var(--text-muted)] mt-0.5 font-mono">{k.api_key_preview}</div>
+                  {k.base_url && <div className="text-xs text-[var(--text-muted)] mt-0.5 font-mono truncate max-w-xs">{k.base_url}</div>}
+                  {k.last_error && !k.is_verified && (
+                    <div className="text-xs text-red-400/80 mt-0.5 truncate max-w-sm" title={k.last_error}>
+                      {k.last_error.substring(0, 80)}{k.last_error.length > 80 ? '...' : ''}
+                    </div>
+                  )}
                 </div>
-                <div className="text-xs text-[var(--text-muted)] mt-0.5 font-mono">{k.api_key_preview}</div>
-              </div>
-              <div className="flex items-center gap-2 shrink-0">
-                <button onClick={() => handleVerify(k.id)} className="btn-ghost text-xs py-1 px-2">验证</button>
-                <button onClick={() => handleDelete(k.id)} className="text-xs text-red-400 hover:text-red-300 px-2 py-1">删除</button>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button onClick={() => openEdit(k)} className="btn-ghost text-xs py-1 px-2">编辑</button>
+                  <button onClick={() => handleVerify(k.id)} disabled={verifyingId === k.id} className="btn-ghost text-xs py-1 px-2 disabled:opacity-50">
+                    {verifyingId === k.id ? '验证中...' : '验证'}
+                  </button>
+                  <button onClick={() => handleDelete(k.id)} className="text-xs text-red-400 hover:text-red-300 px-2 py-1">删除</button>
+                </div>
               </div>
             </div>
           ))}
@@ -141,7 +192,7 @@ export default function SettingsPage() {
               </select>
             </div>
             <div>
-              <label className="text-xs text-[var(--text-muted)] mb-1 block">Base URL (可选)</label>
+              <label className="text-xs text-[var(--text-muted)] mb-1 block">Base URL (可选，OpenAI 兼容需含 /v1)</label>
               <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://openrouter.ai/api/v1" className="w-full input-tech text-sm" />
             </div>
             <div>
@@ -156,6 +207,38 @@ export default function SettingsPage() {
             <div className="flex gap-3 pt-2">
               <button onClick={() => setShowForm(false)} className="btn-ghost flex-1 py-2 text-sm">取消</button>
               <button onClick={handleAdd} disabled={saving} className="btn-primary flex-1 py-2 text-sm disabled:opacity-50">{saving ? '保存中...' : '保存'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Form Modal */}
+      {editingKey && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setEditingKey(null)}>
+          <div className="tech-panel p-6 w-full max-w-md space-y-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-bold text-[var(--text-primary)]">
+              编辑 API Key
+              <span className="text-xs text-[var(--text-muted)] ml-2 font-normal">{editingKey.provider} · {editingKey.model_type}</span>
+            </h3>
+            <div className="text-xs text-[var(--text-muted)] font-mono bg-[var(--badge-bg)] px-3 py-2 rounded">
+              当前: {editingKey.api_key_preview}
+            </div>
+            <div>
+              <label className="text-xs text-[var(--text-muted)] mb-1 block">Base URL (OpenAI 兼容需含 /v1)</label>
+              <input value={editBaseUrl} onChange={(e) => setEditBaseUrl(e.target.value)} placeholder="留空使用默认" className="w-full input-tech text-sm" />
+            </div>
+            <div>
+              <label className="text-xs text-[var(--text-muted)] mb-1 block">新 API Key (留空则不修改)</label>
+              <input value={editApiKey} onChange={(e) => setEditApiKey(e.target.value)} placeholder="留空保持不变" type="password" className="w-full input-tech text-sm" />
+            </div>
+            <div>
+              <label className="text-xs text-[var(--text-muted)] mb-1 block">模型名称</label>
+              <input value={editModelName} onChange={(e) => setEditModelName(e.target.value)} placeholder="gemini-2.5-pro" className="w-full input-tech text-sm" />
+            </div>
+            {editError && <div className="text-red-400 text-xs">{editError}</div>}
+            <div className="flex gap-3 pt-2">
+              <button onClick={() => setEditingKey(null)} className="btn-ghost flex-1 py-2 text-sm">取消</button>
+              <button onClick={handleEdit} disabled={editSaving} className="btn-primary flex-1 py-2 text-sm disabled:opacity-50">{editSaving ? '保存中...' : '保存修改'}</button>
             </div>
           </div>
         </div>

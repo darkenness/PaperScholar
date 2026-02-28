@@ -68,6 +68,8 @@ from app.api.admin import router as admin_router
 from app.api.files import router as files_router
 from app.api.edit import router as edit_router
 from app.api.refine import router as refine_router
+from app.api.evaluate import router as evaluate_router
+from app.api.evolution import router as evolution_router
 
 app.include_router(auth_router, prefix=settings.API_V1_PREFIX)
 app.include_router(api_keys_router, prefix=settings.API_V1_PREFIX)
@@ -77,6 +79,8 @@ app.include_router(admin_router, prefix=settings.API_V1_PREFIX)
 app.include_router(files_router, prefix=settings.API_V1_PREFIX)
 app.include_router(edit_router, prefix=settings.API_V1_PREFIX)
 app.include_router(refine_router, prefix=settings.API_V1_PREFIX)
+app.include_router(evaluate_router, prefix=settings.API_V1_PREFIX)
+app.include_router(evolution_router, prefix=settings.API_V1_PREFIX)
 
 
 @app.get("/api/health")

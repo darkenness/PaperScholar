@@ -14,6 +14,7 @@ class ApiKeyCreate(BaseModel):
 
 class ApiKeyUpdate(BaseModel):
     base_url: Optional[str] = None
+    api_key: Optional[str] = Field(None, min_length=10)
     model_name: Optional[str] = None
     priority: Optional[int] = None
     is_enabled: Optional[bool] = None
@@ -30,6 +31,7 @@ class ApiKeyResponse(BaseModel):
     is_enabled: bool
     priority: int
     last_verified_at: Optional[datetime]
+    last_error: Optional[str] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

@@ -332,3 +332,158 @@ async def run_edit_pipeline(
         await on_event("stage", {"name": "edit_pipeline", "status": "done", "progress": 1.0})
 
     return result
+
+
+async def save_icon_crops(task_dir: str, icon_crops: List[Dict]) -> List[str]:
+    """Save icon crops to disk for later assembly.
+
+    Returns list of saved file paths.
+    """
+    import os
+    icons_dir = os.path.join(task_dir, "icons")
+    os.makedirs(icons_dir, exist_ok=True)
+
+    saved = []
+    for ic in icon_crops:
+        label = ic["label"]
+        icon_bytes = base64.b64decode(ic["b64"])
+        path = os.path.join(icons_dir, f"{label}.png")
+        with open(path, "wb") as f:
+            f.write(icon_bytes)
+        saved.append(path)
+
+    return saved
+
+
+def remove_background_simple(image_bytes: bytes) -> bytes:
+    """Simple background removal: make white/near-white pixels transparent.
+
+    For production use, RMBG-2.0 or similar model would be better,
+    but this provides a usable fallback without extra dependencies.
+    """
+    from PIL import Image
+
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+    pixels = img.load()
+    w, h = img.size
+
+    for y in range(h):
+        for x in range(w):
+            r, g, b, a = pixels[x, y]
+            # Remove near-white backgrounds (threshold: RGB all > 240)
+            if r > 240 and g > 240 and b > 240:
+                pixels[x, y] = (r, g, b, 0)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+async def assemble_final_svg(
+    template_svg: str,
+    task_dir: str,
+    chat_lb: Optional[LoadBalancer] = None,
+) -> Optional[str]:
+    """Assemble final SVG by replacing gray placeholder rectangles with actual icon images.
+
+    Adapted from autofigure-edit's final assembly step:
+    1. Find all <g id="AFxx"> groups in the template SVG
+    2. For each placeholder, load the corresponding icon crop
+    3. Remove background from icon
+    4. Replace the gray rect + label text with an embedded <image> element
+
+    Args:
+        template_svg: The SVG template string with placeholders.
+        task_dir: Directory containing the task's icon crops.
+        chat_lb: Optional LLM client (unused for now, reserved for future LLM-assisted assembly).
+
+    Returns:
+        Assembled SVG string with icons embedded, or None on failure.
+    """
+    import os
+    import xml.etree.ElementTree as ET
+
+    icons_dir = os.path.join(task_dir, "icons")
+
+    # If no icons directory, try to re-extract from figure
+    if not os.path.isdir(icons_dir):
+        logger.warning(f"No icons directory found at {icons_dir}")
+        # Fall back: return template as-is (no icons to replace)
+        return template_svg
+
+    try:
+        # Register SVG namespace to avoid ns0: prefix
+        ET.register_namespace("", "http://www.w3.org/2000/svg")
+        ET.register_namespace("xlink", "http://www.w3.org/1999/xlink")
+
+        root = ET.fromstring(template_svg)
+        ns = {"svg": "http://www.w3.org/2000/svg", "xlink": "http://www.w3.org/1999/xlink"}
+
+        # Find all placeholder groups (id="AF01", "AF02", etc.)
+        replacements = 0
+        for g_elem in root.iter():
+            elem_id = g_elem.get("id", "")
+            if not re.match(r"AF\d+", elem_id):
+                continue
+
+            label = elem_id  # e.g., "AF01"
+            icon_path = os.path.join(icons_dir, f"{label}.png")
+
+            if not os.path.exists(icon_path):
+                logger.warning(f"Icon file not found for {label}: {icon_path}")
+                continue
+
+            # Read and process icon
+            with open(icon_path, "rb") as f:
+                icon_bytes = f.read()
+
+            # Remove background
+            try:
+                icon_bytes = remove_background_simple(icon_bytes)
+            except Exception as e:
+                logger.warning(f"Background removal failed for {label}: {e}")
+
+            icon_b64 = base64.b64encode(icon_bytes).decode()
+
+            # Find the rect element inside this group to get position/size
+            rect = None
+            for child in list(g_elem):
+                tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                if tag == "rect":
+                    rect = child
+                    break
+
+            if rect is None:
+                continue
+
+            x = rect.get("x", "0")
+            y = rect.get("y", "0")
+            width = rect.get("width", "80")
+            height = rect.get("height", "80")
+
+            # Clear the group's children (remove rect + text label)
+            for child in list(g_elem):
+                g_elem.remove(child)
+
+            # Add embedded image element
+            image_elem = ET.SubElement(g_elem, "image")
+            image_elem.set("x", x)
+            image_elem.set("y", y)
+            image_elem.set("width", width)
+            image_elem.set("height", height)
+            image_elem.set("href", f"data:image/png;base64,{icon_b64}")
+            image_elem.set("preserveAspectRatio", "xMidYMid meet")
+
+            replacements += 1
+            logger.info(f"Replaced placeholder {label} with icon image")
+
+        logger.info(f"Assembled final SVG: {replacements} placeholders replaced")
+
+        return ET.tostring(root, encoding="unicode", xml_declaration=False)
+
+    except ET.ParseError as e:
+        logger.error(f"Failed to parse SVG template: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"SVG assembly failed: {e}")
+        return None

@@ -40,6 +40,8 @@ export default function EditPage() {
   const [svgContent, setSvgContent] = useState('');
   const [svgResult, setSvgResult] = useState<any>(null);
   const [svgLoading, setSvgLoading] = useState(false);
+  const [assembling, setAssembling] = useState(false);
+  const [finalSvg, setFinalSvg] = useState<any>(null);
   const [modelSel, setModelSel] = useState<ModelSelection>({ chatModelName: '', chatKeyId: null, imageModelName: '', imageKeyId: null });
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -49,6 +51,30 @@ export default function EditPage() {
       setPreview(URL.createObjectURL(f));
       setResult(null);
     }
+  };
+
+  const handleAssemble = async () => {
+    if (!result?.task_id) { toast.error('请先执行矢量化'); return; }
+    setAssembling(true);
+    const token = localStorage.getItem('token');
+    const formData = new FormData();
+    formData.append('task_id', result.task_id);
+    if (modelSel.chatModelName) formData.append('chat_model_name', modelSel.chatModelName);
+    if (modelSel.chatKeyId) formData.append('chat_key_id', String(modelSel.chatKeyId));
+
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/edit/assemble`, {
+        method: 'POST', body: formData,
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      if (!res.ok) { const err = await res.json(); throw new Error(err.detail || '组装失败'); }
+      const data = await res.json();
+      setFinalSvg(data);
+      toast.success('SVG 最终组装完成');
+    } catch (e: any) {
+      toast.error(e.message);
+    }
+    setAssembling(false);
   };
 
   const handleVectorize = async () => {
@@ -185,9 +211,27 @@ export default function EditPage() {
                   <div className="tech-panel p-5">
                     <div className="flex items-center justify-between mb-3">
                       <h3 className="text-sm font-bold text-[var(--text-primary)]">SVG 模板</h3>
-                      <a href={`${API_BASE}${result.svg_url}`} download className="btn-ghost text-xs py-1 px-3">下载 SVG</a>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={handleAssemble}
+                          disabled={assembling || !result.icon_count}
+                          className="btn-primary text-xs py-1 px-3 disabled:opacity-50"
+                        >
+                          {assembling ? '组装中...' : '组装最终 SVG'}
+                        </button>
+                        <a href={`${API_BASE}${result.svg_url}`} download className="btn-ghost text-xs py-1 px-3">下载模板</a>
+                      </div>
                     </div>
                     <div className="bg-white rounded-lg p-2 max-h-64 overflow-auto" dangerouslySetInnerHTML={{ __html: sanitizeSvg(result.svg_template) }} />
+                  </div>
+                )}
+                {finalSvg?.final_svg && (
+                  <div className="tech-panel p-5">
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="text-sm font-bold text-[var(--text-primary)]">最终 SVG（图标已嵌入）</h3>
+                      <a href={`${API_BASE}${finalSvg.final_svg_url}`} download className="btn-ghost text-xs py-1 px-3">下载最终 SVG</a>
+                    </div>
+                    <div className="bg-white rounded-lg p-2 max-h-96 overflow-auto" dangerouslySetInnerHTML={{ __html: sanitizeSvg(finalSvg.final_svg) }} />
                   </div>
                 )}
               </>
@@ -217,16 +261,60 @@ export default function EditPage() {
           </div>
           <div>
             {svgResult?.svg_code ? (
-              <div className="tech-panel p-5 space-y-3">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-bold text-[var(--text-primary)]">生成结果</h3>
-                  <div className="flex items-center gap-3">
-                    <span className="text-xs text-[var(--text-muted)]">评分: <span className="text-primary-400 font-bold">{svgResult.final_score?.toFixed(1)}/10</span></span>
-                    <span className="text-xs text-[var(--text-muted)]">迭代: {svgResult.iterations}次</span>
-                    {svgResult.svg_url && <a href={`${API_BASE}${svgResult.svg_url}`} download className="btn-ghost text-xs py-1 px-3">下载</a>}
+              <div className="space-y-4">
+                {/* Score & meta bar */}
+                <div className="tech-panel p-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-4">
+                      <div className="flex items-end gap-1">
+                        <span className="text-2xl font-bold text-primary-400">{svgResult.final_score?.toFixed(1)}</span>
+                        <span className="text-xs text-[var(--text-faint)] mb-0.5">/ 10</span>
+                      </div>
+                      <span className="text-xs text-[var(--text-muted)] bg-[var(--badge-bg)] px-2 py-1 rounded">
+                        迭代 {svgResult.iterations} 次
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {svgResult.svg_url && <a href={`${API_BASE}${svgResult.svg_url}`} download className="btn-primary text-xs py-1.5 px-3">下载 SVG</a>}
+                    </div>
                   </div>
                 </div>
-                <div className="bg-white rounded-lg p-2 overflow-auto max-h-96" dangerouslySetInnerHTML={{ __html: sanitizeSvg(svgResult.svg_code) }} />
+
+                {/* SVG Preview — large */}
+                <div className="tech-panel p-4">
+                  <h3 className="text-sm font-bold text-[var(--text-primary)] mb-3">最终结果</h3>
+                  <div className="bg-white rounded-lg p-3 overflow-auto border border-[var(--border-main)]" dangerouslySetInnerHTML={{ __html: sanitizeSvg(svgResult.svg_code) }} />
+                </div>
+
+                {/* Iteration history if available */}
+                {svgResult.iterations > 1 && svgResult.history && (
+                  <div className="tech-panel p-4">
+                    <details>
+                      <summary className="text-sm font-bold text-[var(--text-primary)] cursor-pointer select-none">
+                        迭代历史 ({svgResult.history.length} 轮)
+                      </summary>
+                      <div className="mt-3 space-y-3">
+                        {svgResult.history.map((h: any, idx: number) => (
+                          <div key={idx} className="border border-[var(--border-main)] rounded-lg p-3">
+                            <div className="flex items-center justify-between mb-2">
+                              <span className="text-xs font-medium text-[var(--text-secondary)]">
+                                第 {idx + 1} 轮
+                              </span>
+                              {h.score != null && (
+                                <span className="text-xs font-bold text-primary-400">
+                                  {h.score.toFixed(1)}/10
+                                </span>
+                              )}
+                            </div>
+                            {h.feedback && (
+                              <p className="text-[10px] text-[var(--text-muted)] bg-[var(--bg-inset)] p-2 rounded max-h-20 overflow-y-auto">{h.feedback}</p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="tech-panel p-12 text-center text-[var(--text-muted)]">

@@ -235,31 +235,21 @@ async def verify_system_key(key_id: int, admin: User = Depends(get_current_admin
     if not cfg:
         raise HTTPException(status_code=404, detail="系统API Key不存在")
 
+    from app.llm.client_factory import LLMClientFactory
+
     raw_key = decrypt_api_key(cfg.api_key_encrypted)
     verified = False
     error_msg = ""
     try:
-        import httpx
-        if cfg.provider == "openai_compat":
-            base_url = cfg.base_url or "https://openrouter.ai/api/v1"
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.get(f"{base_url}/models", headers={"Authorization": f"Bearer {raw_key}"})
-                verified = resp.status_code == 200
-                if not verified: error_msg = f"HTTP {resp.status_code}"
-        elif cfg.provider == "gemini":
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={raw_key}")
-                verified = resp.status_code == 200
-                if not verified: error_msg = f"HTTP {resp.status_code}"
-        elif cfg.provider == "anthropic":
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={"x-api-key": raw_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-                    json={"model": "claude-3-haiku-20240307", "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]},
-                )
-                verified = resp.status_code in (200, 429)
-                if not verified: error_msg = f"HTTP {resp.status_code}"
+        client = LLMClientFactory.create(
+            provider=cfg.provider,
+            api_key=raw_key,
+            base_url=cfg.base_url,
+            model=cfg.model_name or "",
+        )
+        verified = await client.health_check()
+        if not verified:
+            error_msg = "health_check 返回 False（API 连接失败或认证无效）"
     except Exception as e:
         error_msg = str(e)
 
@@ -268,6 +258,42 @@ async def verify_system_key(key_id: int, admin: User = Depends(get_current_admin
     cfg.last_error = error_msg if not verified else None
     await db.commit()
     return {"is_verified": verified, "message": "验证通过" if verified else f"验证失败: {error_msg}"}
+
+
+@router.put("/system-keys/{key_id}")
+async def update_system_key(
+    key_id: int,
+    base_url: str = None, api_key: str = None, model_name: str = None,
+    admin: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update a system API key's configuration."""
+    result = await db.execute(select(ApiKeyConfig).where(ApiKeyConfig.id == key_id, ApiKeyConfig.priority == -1))
+    cfg = result.scalar_one_or_none()
+    if not cfg:
+        raise HTTPException(status_code=404, detail="系统API Key不存在")
+
+    if base_url is not None:
+        cfg.base_url = base_url or None
+    if api_key is not None and len(api_key) >= 10:
+        cfg.api_key_encrypted = encrypt_api_key(api_key)
+        cfg.is_verified = False
+    if model_name is not None:
+        cfg.model_name = model_name or None
+
+    await db.commit()
+    await db.refresh(cfg)
+
+    try:
+        preview = mask_api_key(decrypt_api_key(cfg.api_key_encrypted))
+    except Exception:
+        preview = "***"
+    return {
+        "id": cfg.id, "model_type": cfg.model_type, "provider": cfg.provider,
+        "base_url": cfg.base_url, "api_key_preview": preview,
+        "model_name": cfg.model_name, "is_verified": cfg.is_verified,
+        "is_enabled": cfg.is_enabled, "message": "已更新",
+    }
 
 
 @router.delete("/system-keys/{key_id}")
@@ -353,3 +379,79 @@ async def delete_announcement(ann_id: int, admin: User = Depends(get_current_adm
     await db.delete(ann)
     await db.commit()
     return {"message": "公告已删除"}
+
+
+# ── Style Guide Generation (P2-1) ──
+
+from pydantic import BaseModel
+from typing import Optional
+
+
+class StyleGuideGenerateRequest(BaseModel):
+    venue: str = "NeurIPS 2025"
+    category: str = "diagram"  # diagram or plot
+    images_base64: list[str]  # List of base64 encoded reference images
+    captions: Optional[list[str]] = None
+    save_as_default: bool = False  # Whether to overwrite the default style guide
+
+
+@router.post("/generate-style-guide")
+async def generate_style_guide_endpoint(
+    req: StyleGuideGenerateRequest,
+    admin: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate a style guide from uploaded reference images (admin only).
+
+    Uses LLM to analyze common visual patterns across reference images
+    and produces a comprehensive Markdown style guide.
+    """
+    if not req.images_base64:
+        raise HTTPException(status_code=400, detail="至少需要一张参考图片")
+
+    if req.category not in ("diagram", "plot"):
+        raise HTTPException(status_code=400, detail="category 必须为 diagram 或 plot")
+
+    # Build reference images list
+    reference_images = []
+    for idx, b64 in enumerate(req.images_base64):
+        caption = req.captions[idx] if req.captions and idx < len(req.captions) else None
+        reference_images.append({
+            "base64": b64,
+            "caption": caption or f"Reference {idx + 1}",
+        })
+
+    # Build chat load balancer for the admin
+    from app.services.generation_service import _build_load_balancer
+    try:
+        chat_lb = await _build_load_balancer(db, admin.id, "chat")
+        if not chat_lb:
+            raise RuntimeError("No chat model available")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"初始化模型失败: {e}")
+
+    from app.services.style_guide_service import generate_style_guide, save_style_guide
+
+    # Get existing guide path for refinement
+    existing_path = None
+    if req.save_as_default:
+        from app.services.style_guide_service import STYLE_GUIDE_DIR
+        existing_path = str(STYLE_GUIDE_DIR / f"neurips2025_{req.category}_style_guide.md")
+
+    guide_content = await generate_style_guide(
+        chat_lb=chat_lb,
+        reference_images=reference_images,
+        venue=req.venue,
+        category=req.category,
+        existing_guide_path=existing_path,
+    )
+
+    result = {"content": guide_content, "saved": False}
+
+    if req.save_as_default:
+        filename = f"neurips2025_{req.category}_style_guide.md"
+        saved_path = await save_style_guide(guide_content, filename)
+        result["saved"] = True
+        result["saved_path"] = saved_path
+
+    return result

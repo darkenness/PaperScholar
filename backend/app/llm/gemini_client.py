@@ -68,13 +68,11 @@ class GeminiNativeClient(BaseLLMClient):
 
     async def generate_image(self, prompt: str, **kwargs) -> Optional[bytes]:
         from google.genai import types
-        import asyncio as _asyncio
 
         image_model = kwargs.get("image_model", self.model)
         aspect_ratio = kwargs.get("aspect_ratio", "1:1")
-        max_attempts = kwargs.get("max_attempts", 5)
-
         image_size = kwargs.get("image_size", "1k")
+        system_instruction = kwargs.get("system_instruction")
 
         image_config_kwargs = {"aspect_ratio": aspect_ratio}
         if image_size:
@@ -84,28 +82,19 @@ class GeminiNativeClient(BaseLLMClient):
             temperature=1.0,
             response_modalities=["IMAGE"],
             image_config=types.ImageConfig(**image_config_kwargs),
+            system_instruction=system_instruction if system_instruction else None,
         )
 
-        for attempt in range(max_attempts):
-            try:
-                response = await self._genai_client.aio.models.generate_content(
-                    model=image_model,
-                    contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
-                    config=config,
-                )
+        response = await self._genai_client.aio.models.generate_content(
+            model=image_model,
+            contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
+            config=config,
+        )
 
-                if response.candidates and response.candidates[0].content.parts:
-                    for part in response.candidates[0].content.parts:
-                        if part.inline_data:
-                            return part.inline_data.data
-
-                if attempt < max_attempts - 1:
-                    await _asyncio.sleep(min(10 * (2 ** attempt), 30))
-            except Exception as e:
-                if attempt < max_attempts - 1:
-                    await _asyncio.sleep(min(10 * (2 ** attempt), 30))
-                else:
-                    raise
+        if response.candidates and response.candidates[0].content.parts:
+            for part in response.candidates[0].content.parts:
+                if part.inline_data:
+                    return part.inline_data.data
         return None
 
     async def generate_image_with_images(self, prompt: str, images: list[dict], **kwargs) -> Optional[bytes]:
@@ -115,12 +104,10 @@ class GeminiNativeClient(BaseLLMClient):
         both the prompt text and input image(s).
         """
         from google.genai import types
-        import asyncio as _asyncio
 
         image_model = kwargs.get("image_model", self.model)
         aspect_ratio = kwargs.get("aspect_ratio", "1:1")
         image_size = kwargs.get("image_size", "1k")
-        max_attempts = kwargs.get("max_attempts", 3)
 
         # Build parts: text prompt + input images
         parts = [types.Part(text=prompt)]
@@ -141,26 +128,16 @@ class GeminiNativeClient(BaseLLMClient):
             image_config=types.ImageConfig(**image_config_kwargs),
         )
 
-        for attempt in range(max_attempts):
-            try:
-                response = await self._genai_client.aio.models.generate_content(
-                    model=image_model,
-                    contents=[types.Content(role="user", parts=parts)],
-                    config=config,
-                )
+        response = await self._genai_client.aio.models.generate_content(
+            model=image_model,
+            contents=[types.Content(role="user", parts=parts)],
+            config=config,
+        )
 
-                if response.candidates and response.candidates[0].content.parts:
-                    for part in response.candidates[0].content.parts:
-                        if part.inline_data:
-                            return part.inline_data.data
-
-                if attempt < max_attempts - 1:
-                    await _asyncio.sleep(min(10 * (2 ** attempt), 30))
-            except Exception as e:
-                if attempt < max_attempts - 1:
-                    await _asyncio.sleep(min(10 * (2 ** attempt), 30))
-                else:
-                    raise
+        if response.candidates and response.candidates[0].content.parts:
+            for part in response.candidates[0].content.parts:
+                if part.inline_data:
+                    return part.inline_data.data
         return None
 
     async def generate_image_from_chat(self, contents: list, **kwargs) -> Optional[bytes]:
@@ -169,11 +146,9 @@ class GeminiNativeClient(BaseLLMClient):
         Uses response_modalities=["IMAGE"] with multimodal content.
         """
         from google.genai import types
-        import asyncio as _asyncio
 
         aspect_ratio = kwargs.get("aspect_ratio", "1:1")
         image_size = kwargs.get("image_size", "1k")
-        max_attempts = kwargs.get("max_attempts", 3)
 
         # Build parts from contents list
         parts = []
@@ -200,26 +175,16 @@ class GeminiNativeClient(BaseLLMClient):
             image_config=types.ImageConfig(**image_config_kwargs),
         )
 
-        for attempt in range(max_attempts):
-            try:
-                response = await self._genai_client.aio.models.generate_content(
-                    model=self.model,
-                    contents=[types.Content(role="user", parts=parts)],
-                    config=config,
-                )
+        response = await self._genai_client.aio.models.generate_content(
+            model=self.model,
+            contents=[types.Content(role="user", parts=parts)],
+            config=config,
+        )
 
-                if response.candidates and response.candidates[0].content.parts:
-                    for part in response.candidates[0].content.parts:
-                        if part.inline_data:
-                            return part.inline_data.data
-
-                if attempt < max_attempts - 1:
-                    await _asyncio.sleep(min(10 * (2 ** attempt), 30))
-            except Exception as e:
-                if attempt < max_attempts - 1:
-                    await _asyncio.sleep(min(10 * (2 ** attempt), 30))
-                else:
-                    raise
+        if response.candidates and response.candidates[0].content.parts:
+            for part in response.candidates[0].content.parts:
+                if part.inline_data:
+                    return part.inline_data.data
         return None
 
     async def health_check(self) -> bool:

@@ -40,6 +40,7 @@ def _to_response(cfg: ApiKeyConfig) -> ApiKeyResponse:
         is_enabled=cfg.is_enabled,
         priority=cfg.priority,
         last_verified_at=cfg.last_verified_at,
+        last_error=cfg.last_error,
         created_at=cfg.created_at,
     )
 
@@ -80,41 +81,21 @@ async def verify_api_key(key_id: int, user: User = Depends(get_current_user), db
     if not cfg:
         raise HTTPException(status_code=404, detail="API Key配置不存在")
 
-    raw_key = decrypt_api_key(cfg.api_key_encrypted)
+    from app.llm.client_factory import LLMClientFactory
 
-    # Simple verification: try a minimal API call
+    raw_key = decrypt_api_key(cfg.api_key_encrypted)
     verified = False
     error_msg = ""
     try:
-        import httpx
-
-        if cfg.provider == "openai_compat":
-            base_url = cfg.base_url or "https://openrouter.ai/api/v1"
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.get(f"{base_url}/models", headers={"Authorization": f"Bearer {raw_key}"})
-                verified = resp.status_code == 200
-                if not verified:
-                    error_msg = f"HTTP {resp.status_code}"
-        elif cfg.provider == "gemini":
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.get(
-                    f"https://generativelanguage.googleapis.com/v1beta/models?key={raw_key}"
-                )
-                verified = resp.status_code == 200
-                if not verified:
-                    error_msg = f"HTTP {resp.status_code}"
-        elif cfg.provider == "anthropic":
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={"x-api-key": raw_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-                    json={"model": "claude-3-haiku-20240307", "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]},
-                )
-                verified = resp.status_code in (200, 429)  # 429 = rate limited but key is valid
-                if not verified:
-                    error_msg = f"HTTP {resp.status_code}"
-        else:
-            error_msg = f"不支持的Provider: {cfg.provider}"
+        client = LLMClientFactory.create(
+            provider=cfg.provider,
+            api_key=raw_key,
+            base_url=cfg.base_url,
+            model=cfg.model_name or "",
+        )
+        verified = await client.health_check()
+        if not verified:
+            error_msg = "health_check 返回 False（API 连接失败或认证无效）"
     except Exception as e:
         error_msg = str(e)
 
@@ -139,9 +120,12 @@ async def update_api_key(key_id: int, req: ApiKeyUpdate, user: User = Depends(ge
         raise HTTPException(status_code=404, detail="API Key配置不存在")
 
     if req.base_url is not None:
-        cfg.base_url = req.base_url
+        cfg.base_url = req.base_url or None  # empty string -> None
+    if req.api_key is not None:
+        cfg.api_key_encrypted = encrypt_api_key(req.api_key)
+        cfg.is_verified = False  # reset verification after key change
     if req.model_name is not None:
-        cfg.model_name = req.model_name
+        cfg.model_name = req.model_name or None
     if req.priority is not None:
         cfg.priority = req.priority
     if req.is_enabled is not None:

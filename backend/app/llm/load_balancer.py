@@ -51,17 +51,22 @@ class LoadBalancer:
         return len(self._states)
 
     def _next_available(self) -> Optional[ClientState]:
-        """Get next available client in round-robin order."""
+        """Get next available client in round-robin order (lock-free read)."""
         n = len(self._states)
         for _ in range(n):
-            state = self._states[self._index % n]
+            idx = self._index % n
             self._index += 1
+            state = self._states[idx]
             if not state.is_disabled:
                 return state
         return None
 
-    async def call(self, method: str, max_retries: int = 2, **kwargs) -> Any:
-        """Call a method on the next available client with automatic failover and exponential backoff retry."""
+    async def call(self, method: str, max_retries: int = 3, **kwargs) -> Any:
+        """Call a method on the next available client with retry.
+
+        Retries up to max_retries times per client.
+        Backoff: 1-5s for normal errors, 15-60s for rate limits/server errors.
+        """
         if not self._states:
             raise RuntimeError("No LLM clients configured")
 
@@ -69,6 +74,7 @@ class LoadBalancer:
         tried = 0
 
         for _ in range(len(self._states)):
+            # Only hold lock briefly for index selection, not during API call
             async with self._lock:
                 state = self._next_available()
 
@@ -76,17 +82,35 @@ class LoadBalancer:
                 break
 
             tried += 1
-            # Exponential backoff retry per client
             for retry in range(max_retries + 1):
                 try:
                     result = await getattr(state.client, method)(**kwargs)
-                    # Reset failure count on success
                     state.failures = 0
                     return result
+                except (AttributeError, NotImplementedError, TypeError) as e:
+                    # Permanent errors — retrying won't help
+                    last_error = e
+                    state.failures += 1
+                    logger.error(
+                        f"LLM client {state.config.provider}({state.config.model}) "
+                        f"permanent error on '{method}': {e}"
+                    )
+                    break  # skip to next client
                 except Exception as e:
                     last_error = e
                     if retry < max_retries:
-                        backoff = min(2 ** retry, 8)  # 1s, 2s, 4s, max 8s
+                        # Use longer backoff for rate-limit (429), server errors (5xx),
+                        # and connection failures — to match PaperBanana's retry_delay=30
+                        err_str = str(e).lower()
+                        is_server_issue = (
+                            "429" in err_str or "503" in err_str or "502" in err_str
+                            or "disconnect" in err_str or "timed out" in err_str
+                            or "connection" in err_str
+                        )
+                        if is_server_issue:
+                            backoff = min(20 * (retry + 1), 60)  # 20s, 40s, 60s
+                        else:
+                            backoff = min(3 * (retry + 1), 10)  # 3s, 6s, 9s
                         logger.warning(
                             f"LLM client {state.config.provider}({state.config.model}) "
                             f"retry {retry + 1}/{max_retries} after {backoff}s: {e}"
@@ -94,17 +118,10 @@ class LoadBalancer:
                         await asyncio.sleep(backoff)
                     else:
                         state.failures += 1
-                        logger.warning(
+                        logger.error(
                             f"LLM client {state.config.provider}({state.config.model}) "
-                            f"failed after {max_retries + 1} attempts (consecutive: {state.failures}): {e}"
+                            f"failed after {max_retries + 1} attempts: {e}"
                         )
-                        # Disable after 3 consecutive failures
-                        if state.failures >= 3:
-                            state.is_disabled = True
-                            logger.error(
-                                f"LLM client {state.config.provider}({state.config.model}) "
-                                f"disabled after {state.failures} consecutive failures"
-                            )
 
         raise RuntimeError(
             f"All {tried} LLM clients failed. Last error: {last_error}"

@@ -120,12 +120,16 @@ export const generateApi = {
   },
   cancel: (taskId: string) =>
     request<any>(`${API_V1}/generate/${taskId}/cancel`, { method: 'POST' }),
+  deleteTask: (taskId: string) =>
+    request<any>(`${API_V1}/generate/${taskId}`, { method: 'DELETE' }),
   toggleFavorite: (resultId: number, isFavorited: boolean) =>
     request<any>(`${API_V1}/generate/results/${resultId}/favorite`, {
       method: 'POST',
       body: JSON.stringify({ is_favorited: isFavorited }),
     }),
   streamUrl: (taskId: string) => `${API_V1}/generate/${taskId}/stream`,
+  getEvolution: (taskId: string) => request<any>(`${API_V1}/generate/${taskId}/evolution`),
+  downloadZip: (taskId: string) => `${API_V1}/generate/${taskId}/download`,
 };
 
 // Admin
@@ -162,6 +166,13 @@ export const adminApi = {
   },
   verifySystemKey: (id: number) =>
     request<any>(`${API_V1}/admin/system-keys/${id}/verify`, { method: 'POST' }),
+  updateSystemKey: (id: number, data: { base_url?: string; api_key?: string; model_name?: string }) => {
+    const params = new URLSearchParams();
+    if (data.base_url !== undefined) params.set('base_url', data.base_url);
+    if (data.api_key !== undefined) params.set('api_key', data.api_key);
+    if (data.model_name !== undefined) params.set('model_name', data.model_name);
+    return request<any>(`${API_V1}/admin/system-keys/${id}?${params.toString()}`, { method: 'PUT' });
+  },
   deleteSystemKey: (id: number) =>
     request<any>(`${API_V1}/admin/system-keys/${id}`, { method: 'DELETE' }),
 };

@@ -17,10 +17,12 @@ from app.core.security import decode_access_token
 # Rate limit config: route_prefix -> (max_requests, window_seconds)
 RATE_LIMITS: dict[str, tuple[int, int]] = {
     "/api/v1/auth": (10, 60),        # 10 req/min
-    "/api/v1/generate": (5, 60),     # 5 req/min (POST only)
+    "/api/v1/generate": (10, 60),    # 10 req/min (POST only, GET is excluded below)
+    "/api/v1/refine": (10, 60),      # 10 req/min
+    "/api/v1/edit": (10, 60),        # 10 req/min
     "/api/v1/references/upload": (10, 60),  # 10 req/min
     "/api/v1/admin": (120, 60),      # 120 req/min
-    "_default": (60, 60),            # 60 req/min for all other endpoints
+    "_default": (120, 60),           # 120 req/min for all other endpoints (including polling)
 }
 
 # In-memory store: key -> list of timestamps
