@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { toast } from 'sonner';
+import ModelSelector, { type ModelSelection } from '@/components/ModelSelector';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
 
@@ -23,6 +24,7 @@ export default function RefinePage() {
   const [aspectRatio, setAspectRatio] = useState('16:9');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
+  const [modelSel, setModelSel] = useState<ModelSelection>({ chatModelName: '', chatKeyId: null, imageModelName: '', imageKeyId: null });
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, isRef = false) => {
     const f = e.target.files?.[0];
@@ -42,6 +44,10 @@ export default function RefinePage() {
     formData.append('instruction', instruction);
     formData.append('resolution', resolution);
     formData.append('aspect_ratio', aspectRatio);
+    if (modelSel.chatModelName) formData.append('chat_model_name', modelSel.chatModelName);
+    if (modelSel.chatKeyId) formData.append('chat_key_id', String(modelSel.chatKeyId));
+    if (modelSel.imageModelName) formData.append('image_model_name', modelSel.imageModelName);
+    if (modelSel.imageKeyId) formData.append('image_key_id', String(modelSel.imageKeyId));
 
     try {
       const res = await fetch(`${API_BASE}/api/v1/refine/enhance`, {
@@ -64,6 +70,10 @@ export default function RefinePage() {
     formData.append('reference_image', refFile);
     formData.append('resolution', resolution);
     formData.append('aspect_ratio', aspectRatio);
+    if (modelSel.chatModelName) formData.append('chat_model_name', modelSel.chatModelName);
+    if (modelSel.chatKeyId) formData.append('chat_key_id', String(modelSel.chatKeyId));
+    if (modelSel.imageModelName) formData.append('image_model_name', modelSel.imageModelName);
+    if (modelSel.imageKeyId) formData.append('image_key_id', String(modelSel.imageKeyId));
 
     try {
       const res = await fetch(`${API_BASE}/api/v1/refine/style-transfer`, {
@@ -131,6 +141,10 @@ export default function RefinePage() {
             </select>
           </div>
         </div>
+      </div>
+
+      <div className="tech-panel p-4">
+        <ModelSelector showChat={true} showImage={true} onChange={setModelSel} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

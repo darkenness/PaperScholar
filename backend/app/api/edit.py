@@ -23,6 +23,8 @@ async def create_edit_task(
     sam_api_key: Optional[str] = Form(None),
     sam_prompts: str = Form("icon,diagram,arrow"),
     reference_image: Optional[UploadFile] = File(None),
+    chat_model_name: Optional[str] = Form(None),
+    chat_key_id: Optional[int] = Form(None),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -31,9 +33,9 @@ async def create_edit_task(
     if len(content) > settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024:
         raise HTTPException(status_code=400, detail=f"文件太大，最大 {settings.MAX_UPLOAD_SIZE_MB}MB")
 
-    # Build LLM client from user's keys
+    # Build LLM client from user's keys (with optional model selection)
     from app.services.generation_service import _build_load_balancer
-    chat_lb = await _build_load_balancer(db, user.id, "chat")
+    chat_lb = await _build_load_balancer(db, user.id, "chat", key_id=chat_key_id, model_name=chat_model_name)
     if not chat_lb:
         raise HTTPException(status_code=400, detail="没有可用的 Chat 模型 API Key")
 
@@ -83,12 +85,14 @@ async def generate_svg(
     content: str = Form(""),
     max_iterations: int = Form(5),
     quality_threshold: float = Form(8.0),
+    chat_model_name: Optional[str] = Form(None),
+    chat_key_id: Optional[int] = Form(None),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Generate an SVG figure using AutoFigure-style iterative refinement."""
     from app.services.generation_service import _build_load_balancer
-    chat_lb = await _build_load_balancer(db, user.id, "chat")
+    chat_lb = await _build_load_balancer(db, user.id, "chat", key_id=chat_key_id, model_name=chat_model_name)
     if not chat_lb:
         raise HTTPException(status_code=400, detail="没有可用的 Chat 模型 API Key")
 

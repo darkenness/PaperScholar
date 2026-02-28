@@ -112,6 +112,10 @@ async def enhance_image(
     instruction: str = Form("Improve overall visual quality and make it publication-ready"),
     resolution: str = Form("2K"),
     aspect_ratio: str = Form("16:9"),
+    chat_model_name: Optional[str] = Form(None),
+    chat_key_id: Optional[int] = Form(None),
+    image_model_name: Optional[str] = Form(None),
+    image_key_id: Optional[int] = Form(None),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -123,8 +127,8 @@ async def enhance_image(
     content = await image.read()
 
     from app.services.generation_service import _build_load_balancer
-    image_lb = await _build_load_balancer(db, user.id, "image")
-    chat_lb = await _build_load_balancer(db, user.id, "chat")
+    image_lb = await _build_load_balancer(db, user.id, "image", key_id=image_key_id, model_name=image_model_name)
+    chat_lb = await _build_load_balancer(db, user.id, "chat", key_id=chat_key_id, model_name=chat_model_name)
     if not (image_lb or chat_lb):
         raise HTTPException(status_code=400, detail="没有可用的 API Key")
 
@@ -172,6 +176,10 @@ async def style_transfer(
     reference_image: UploadFile = File(...),
     resolution: str = Form("2K"),
     aspect_ratio: str = Form("16:9"),
+    chat_model_name: Optional[str] = Form(None),
+    chat_key_id: Optional[int] = Form(None),
+    image_model_name: Optional[str] = Form(None),
+    image_key_id: Optional[int] = Form(None),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -184,8 +192,8 @@ async def style_transfer(
     ref_bytes = await reference_image.read()
 
     from app.services.generation_service import _build_load_balancer
-    image_lb = await _build_load_balancer(db, user.id, "image")
-    chat_lb = await _build_load_balancer(db, user.id, "chat")
+    image_lb = await _build_load_balancer(db, user.id, "image", key_id=image_key_id, model_name=image_model_name)
+    chat_lb = await _build_load_balancer(db, user.id, "chat", key_id=chat_key_id, model_name=chat_model_name)
     if not (image_lb or chat_lb):
         raise HTTPException(status_code=400, detail="没有可用的 API Key")
 

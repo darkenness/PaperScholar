@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { generateApi, type AvailableModelsResponse } from '@/lib/api';
+import { useState } from 'react';
+import { generateApi } from '@/lib/api';
+import ModelSelector, { type ModelSelection } from '@/components/ModelSelector';
 
 // Diagram pipeline modes — aligned with PaperBanana demo
 const DIAGRAM_PIPELINE_MODES = [
@@ -44,13 +45,7 @@ export default function GeneratePage() {
   const [aspectRatio, setAspectRatio] = useState('16:9');
   const [maxCriticRounds, setMaxCriticRounds] = useState(3);
 
-  // Model selection state
-  const [availableModels, setAvailableModels] = useState<AvailableModelsResponse | null>(null);
-  const [modelsLoading, setModelsLoading] = useState(false);
-  const [chatModelName, setChatModelName] = useState<string>('');
-  const [chatKeyId, setChatKeyId] = useState<number | null>(null);
-  const [imageModelName, setImageModelName] = useState<string>('');
-  const [imageKeyId, setImageKeyId] = useState<number | null>(null);
+  const [modelSel, setModelSel] = useState<ModelSelection>({ chatModelName: '', chatKeyId: null, imageModelName: '', imageKeyId: null });
 
   const [loading, setLoading] = useState(false);
   const [taskId, setTaskId] = useState<string | null>(null);
@@ -60,36 +55,6 @@ export default function GeneratePage() {
   const [previewImages, setPreviewImages] = useState<string[]>([]);
   const [error, setError] = useState('');
   const [isDone, setIsDone] = useState(false);
-
-  useEffect(() => {
-    const fetchModels = async () => {
-      setModelsLoading(true);
-      try {
-        const data = await generateApi.getAvailableModels();
-        setAvailableModels(data);
-        if (data.chat_models.length === 1) {
-          setChatModelName(data.chat_models[0].model_name);
-          if (data.chat_models[0].providers.length === 1) {
-            setChatKeyId(data.chat_models[0].providers[0].key_id);
-          }
-        }
-        if (data.image_models.length === 1) {
-          setImageModelName(data.image_models[0].model_name);
-          if (data.image_models[0].providers.length === 1) {
-            setImageKeyId(data.image_models[0].providers[0].key_id);
-          }
-        }
-      } catch {
-        // Models not available yet; user might not have keys configured
-      } finally {
-        setModelsLoading(false);
-      }
-    };
-    fetchModels();
-  }, []);
-
-  const selectedChatGroup = availableModels?.chat_models.find(m => m.model_name === chatModelName);
-  const selectedImageGroup = availableModels?.image_models.find(m => m.model_name === imageModelName);
 
   const handleGenerate = async () => {
     if (!content.trim() || !caption.trim()) {
@@ -114,10 +79,10 @@ export default function GeneratePage() {
         num_candidates: numCandidates,
         aspect_ratio: taskType === 'diagram' ? aspectRatio : undefined,
         max_critic_rounds: maxCriticRounds,
-        chat_model_name: chatModelName || undefined,
-        chat_key_id: chatKeyId || undefined,
-        image_model_name: imageModelName || undefined,
-        image_key_id: imageKeyId || undefined,
+        chat_model_name: modelSel.chatModelName || undefined,
+        chat_key_id: modelSel.chatKeyId || undefined,
+        image_model_name: modelSel.imageModelName || undefined,
+        image_key_id: modelSel.imageKeyId || undefined,
       });
 
       setTaskId(res.task_id);
@@ -175,8 +140,8 @@ export default function GeneratePage() {
           <p className="text-[var(--text-muted)] text-xs mt-0.5">
             {taskType === 'diagram' ? '示意图模式 · 图像生成' : '统计图模式 · matplotlib'}
             {' · '}{(taskType === 'diagram' ? DIAGRAM_PIPELINE_MODES : PLOT_PIPELINE_MODES).find(m => m.value === pipelineMode)?.label}
-            {chatModelName && <span className="text-primary-400"> · Chat: {chatModelName}</span>}
-            {imageModelName && <span className="text-primary-400"> · Image: {imageModelName}</span>}
+            {modelSel.chatModelName && <span className="text-primary-400"> · Chat: {modelSel.chatModelName}</span>}
+            {modelSel.imageModelName && <span className="text-primary-400"> · Image: {modelSel.imageModelName}</span>}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -376,112 +341,7 @@ export default function GeneratePage() {
               </div>
 
               {/* Model selection */}
-              {availableModels && (
-                <div className="space-y-3 pt-2 border-t border-[var(--border-subtle)]">
-                  <label className="text-[11px] font-bold text-[var(--text-muted)] block uppercase tracking-wider">模型选择</label>
-
-                  {availableModels.chat_models.length === 0 && availableModels.image_models.length === 0 && (
-                    <div className="py-3 px-3 bg-yellow-500/10 border border-yellow-500/20">
-                      <p className="text-xs text-yellow-400">暂无可用模型</p>
-                      <p className="text-[10px] text-[var(--text-muted)] mt-1">
-                        请先在 <a href="/dashboard/settings" className="text-primary-400 underline">API 配置</a> 中添加并验证 API Key，或申请使用系统 API
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Chat Model */}
-                  {availableModels.chat_models.length > 0 && (
-                    <div>
-                      <label className="text-[11px] text-[var(--text-muted)] mb-1 block">Chat 模型</label>
-                      <select
-                        value={chatModelName}
-                        onChange={(e) => {
-                          const name = e.target.value;
-                          setChatModelName(name);
-                          setChatKeyId(null);
-                          const group = availableModels.chat_models.find(m => m.model_name === name);
-                          if (group && group.providers.length === 1) {
-                            setChatKeyId(group.providers[0].key_id);
-                          }
-                        }}
-                        className="w-full input-tech text-sm py-2"
-                      >
-                        <option value="">自动选择</option>
-                        {availableModels.chat_models.map(m => (
-                          <option key={m.model_name} value={m.model_name}>
-                            {m.model_name} ({m.providers.length}个供应商)
-                          </option>
-                        ))}
-                      </select>
-                      {selectedChatGroup && selectedChatGroup.providers.length > 1 && (
-                        <div className="mt-1.5">
-                          <label className="text-[11px] text-[var(--text-faint)] mb-1 block">选择供应商</label>
-                          <select
-                            value={chatKeyId ?? ''}
-                            onChange={(e) => setChatKeyId(e.target.value ? Number(e.target.value) : null)}
-                            className="w-full input-tech text-sm py-2"
-                          >
-                            <option value="">自动负载均衡</option>
-                            {selectedChatGroup.providers.map(p => (
-                              <option key={p.key_id} value={p.key_id}>
-                                {p.provider}{p.base_url ? ` · ${new URL(p.base_url).host}` : ''}{p.is_system ? ' [系统]' : ''} ({p.api_key_preview})
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Image Model */}
-                  {availableModels.image_models.length > 0 && (
-                    <div>
-                      <label className="text-[11px] text-[var(--text-muted)] mb-1 block">Image 模型</label>
-                      <select
-                        value={imageModelName}
-                        onChange={(e) => {
-                          const name = e.target.value;
-                          setImageModelName(name);
-                          setImageKeyId(null);
-                          const group = availableModels.image_models.find(m => m.model_name === name);
-                          if (group && group.providers.length === 1) {
-                            setImageKeyId(group.providers[0].key_id);
-                          }
-                        }}
-                        className="w-full input-tech text-sm py-2"
-                      >
-                        <option value="">自动选择（fallback 到 Chat）</option>
-                        {availableModels.image_models.map(m => (
-                          <option key={m.model_name} value={m.model_name}>
-                            {m.model_name} ({m.providers.length}个供应商)
-                          </option>
-                        ))}
-                      </select>
-                      {selectedImageGroup && selectedImageGroup.providers.length > 1 && (
-                        <div className="mt-1.5">
-                          <label className="text-[11px] text-[var(--text-faint)] mb-1 block">选择供应商</label>
-                          <select
-                            value={imageKeyId ?? ''}
-                            onChange={(e) => setImageKeyId(e.target.value ? Number(e.target.value) : null)}
-                            className="w-full input-tech text-sm py-2"
-                          >
-                            <option value="">自动负载均衡</option>
-                            {selectedImageGroup.providers.map(p => (
-                              <option key={p.key_id} value={p.key_id}>
-                                {p.provider}{p.base_url ? ` · ${new URL(p.base_url).host}` : ''}{p.is_system ? ' [系统]' : ''} ({p.api_key_preview})
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {modelsLoading && (
-                <div className="text-[10px] text-[var(--text-faint)] py-2">正在加载可用模型...</div>
-              )}
+              <ModelSelector showChat={true} showImage={true} onChange={setModelSel} />
 
               {/* Pipeline settings */}
               <div className="space-y-3 pt-2 border-t border-[var(--border-subtle)]">

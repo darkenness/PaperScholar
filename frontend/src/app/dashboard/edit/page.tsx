@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState } from 'react';
 import { toast } from 'sonner';
+import ModelSelector, { type ModelSelection } from '@/components/ModelSelector';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
 
@@ -39,6 +40,7 @@ export default function EditPage() {
   const [svgContent, setSvgContent] = useState('');
   const [svgResult, setSvgResult] = useState<any>(null);
   const [svgLoading, setSvgLoading] = useState(false);
+  const [modelSel, setModelSel] = useState<ModelSelection>({ chatModelName: '', chatKeyId: null, imageModelName: '', imageKeyId: null });
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
@@ -58,6 +60,8 @@ export default function EditPage() {
     formData.append('sam_backend', samBackend);
     if (samApiKey) formData.append('sam_api_key', samApiKey);
     formData.append('sam_prompts', samPrompts);
+    if (modelSel.chatModelName) formData.append('chat_model_name', modelSel.chatModelName);
+    if (modelSel.chatKeyId) formData.append('chat_key_id', String(modelSel.chatKeyId));
 
     try {
       const res = await fetch(`${API_BASE}/api/v1/edit`, {
@@ -81,6 +85,8 @@ export default function EditPage() {
     const formData = new FormData();
     formData.append('description', svgDesc);
     formData.append('content', svgContent);
+    if (modelSel.chatModelName) formData.append('chat_model_name', modelSel.chatModelName);
+    if (modelSel.chatKeyId) formData.append('chat_key_id', String(modelSel.chatKeyId));
 
     try {
       const res = await fetch(`${API_BASE}/api/v1/edit/svg-generate`, {
@@ -112,6 +118,10 @@ export default function EditPage() {
         <button onClick={() => setSvgMode(true)} className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${svgMode ? 'bg-primary-600 text-white' : 'bg-[var(--badge-bg)] text-[var(--text-muted)]'}`}>
           SVG 直接生成
         </button>
+      </div>
+
+      <div className="tech-panel p-4">
+        <ModelSelector showChat={true} showImage={false} onChange={setModelSel} />
       </div>
 
       {!svgMode ? (
