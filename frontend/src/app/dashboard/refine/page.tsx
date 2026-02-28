@@ -5,6 +5,13 @@ import { toast } from 'sonner';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
 
+const RESOLUTION_OPTIONS = [
+  { value: '2K', label: '2K', desc: '平衡速度与质量' },
+  { value: '4K', label: '4K', desc: '最高质量，耗时更长' },
+];
+
+const ASPECT_RATIO_OPTIONS = ['16:9', '4:3', '3:4', '1:1', '9:16'];
+
 export default function RefinePage() {
   const [mode, setMode] = useState<'enhance' | 'style'>('enhance');
   const [file, setFile] = useState<File | null>(null);
@@ -12,6 +19,8 @@ export default function RefinePage() {
   const [refFile, setRefFile] = useState<File | null>(null);
   const [refPreview, setRefPreview] = useState<string | null>(null);
   const [instruction, setInstruction] = useState('提高整体视觉质量，使其达到出版级别');
+  const [resolution, setResolution] = useState('2K');
+  const [aspectRatio, setAspectRatio] = useState('16:9');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
 
@@ -31,6 +40,8 @@ export default function RefinePage() {
     const formData = new FormData();
     formData.append('image', file);
     formData.append('instruction', instruction);
+    formData.append('resolution', resolution);
+    formData.append('aspect_ratio', aspectRatio);
 
     try {
       const res = await fetch(`${API_BASE}/api/v1/refine/enhance`, {
@@ -51,6 +62,8 @@ export default function RefinePage() {
     const formData = new FormData();
     formData.append('source_image', file);
     formData.append('reference_image', refFile);
+    formData.append('resolution', resolution);
+    formData.append('aspect_ratio', aspectRatio);
 
     try {
       const res = await fetch(`${API_BASE}/api/v1/refine/style-transfer`, {
@@ -80,6 +93,46 @@ export default function RefinePage() {
         </button>
       </div>
 
+      {/* Resolution & Aspect Ratio settings */}
+      <div className="tech-panel p-4">
+        <div className="flex flex-wrap items-center gap-5">
+          <div className="flex items-center gap-2">
+            <label className="text-[11px] font-bold text-[var(--text-muted)] uppercase tracking-wider whitespace-nowrap">目标分辨率</label>
+            <div className="flex gap-1.5">
+              {RESOLUTION_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  onClick={() => setResolution(opt.value)}
+                  className={`px-3 py-1.5 text-xs font-medium rounded transition-all ${
+                    resolution === opt.value
+                      ? 'bg-primary-600 text-white'
+                      : 'bg-[var(--badge-bg)] text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+                  }`}
+                  title={opt.desc}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <span className="text-[10px] text-[var(--text-faint)]">
+              {RESOLUTION_OPTIONS.find(o => o.value === resolution)?.desc}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="text-[11px] font-bold text-[var(--text-muted)] uppercase tracking-wider whitespace-nowrap">宽高比</label>
+            <select
+              value={aspectRatio}
+              onChange={(e) => setAspectRatio(e.target.value)}
+              className="input-tech text-xs py-1.5 px-2"
+            >
+              {ASPECT_RATIO_OPTIONS.map((r) => (
+                <option key={r} value={r}>{r}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Left: Input */}
         <div className="space-y-4">
@@ -100,7 +153,7 @@ export default function RefinePage() {
               <h3 className="text-sm font-bold text-[var(--text-primary)] mb-3">增强指令</h3>
               <textarea value={instruction} onChange={(e) => setInstruction(e.target.value)} rows={3} className="w-full input-tech text-sm resize-none" placeholder="描述你希望如何改进这张图片..." />
               <button onClick={handleEnhance} disabled={loading || !file} className="w-full btn-primary py-2.5 text-sm mt-3 disabled:opacity-50">
-                {loading ? '增强中...' : '开始增强'}
+                {loading ? `正在增强至 ${resolution}...` : `开始增强 (${resolution})`}
               </button>
             </div>
           ) : (
@@ -115,7 +168,7 @@ export default function RefinePage() {
                 )}
               </label>
               <button onClick={handleStyleTransfer} disabled={loading || !file || !refFile} className="w-full btn-primary py-2.5 text-sm mt-3 disabled:opacity-50">
-                {loading ? '迁移中...' : '开始风格迁移'}
+                {loading ? `正在迁移至 ${resolution}...` : `开始风格迁移 (${resolution})`}
               </button>
             </div>
           )}
@@ -125,17 +178,20 @@ export default function RefinePage() {
         <div>
           {result ? (
             <div className="tech-panel p-5 space-y-4">
-              <h3 className="text-sm font-bold text-[var(--text-primary)]">结果</h3>
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-bold text-[var(--text-primary)]">结果</h3>
+                <span className="text-[10px] text-[var(--text-faint)]">{resolution} · {aspectRatio}</span>
+              </div>
               {mode === 'enhance' && result.enhanced_url && (
                 <div className="space-y-3">
                   <div className="bg-white rounded-lg overflow-hidden"><img src={`${API_BASE}${result.enhanced_url}`} alt="Enhanced" className="w-full" /></div>
-                  <a href={`${API_BASE}${result.enhanced_url}`} download className="btn-primary text-xs py-2 px-4 inline-block">下载增强图片</a>
+                  <a href={`${API_BASE}${result.enhanced_url}`} download className="btn-primary text-xs py-2 px-4 inline-block">下载 {resolution} 增强图片</a>
                 </div>
               )}
               {mode === 'style' && result.result_url && (
                 <div className="space-y-3">
                   <div className="bg-white rounded-lg overflow-hidden"><img src={`${API_BASE}${result.result_url}`} alt="Result" className="w-full" /></div>
-                  <a href={`${API_BASE}${result.result_url}`} download className="btn-primary text-xs py-2 px-4 inline-block">下载结果</a>
+                  <a href={`${API_BASE}${result.result_url}`} download className="btn-primary text-xs py-2 px-4 inline-block">下载 {resolution} 结果</a>
                 </div>
               )}
             </div>

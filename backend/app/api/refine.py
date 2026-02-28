@@ -21,6 +21,8 @@ router = APIRouter(prefix="/refine", tags=["精修增强"])
 REFINE_PROMPT = """You are an expert image enhancement specialist for academic publications.
 
 **Instruction:** {instruction}
+**Target aspect ratio:** {aspect_ratio}
+**Target resolution:** {resolution}
 
 Please generate an improved version of the provided image. Maintain all data accuracy and semantic content while enhancing visual quality. Output ONLY the improved image."""
 
@@ -29,6 +31,9 @@ STYLE_TRANSFER_PROMPT = """You are a professional figure style transfer expert.
 I am providing two images:
 1. **Source figure** (first image) — this contains the content to preserve.
 2. **Reference style image** (second image) — this shows the target visual style.
+
+**Target aspect ratio:** {aspect_ratio}
+**Target resolution:** {resolution}
 
 Generate a new figure that keeps the exact same content/structure as the source figure, but renders it in the visual style of the reference image.
 
@@ -42,6 +47,7 @@ async def _generate_image_with_input(
     prompt: str,
     input_images: list[dict],
     aspect_ratio: str = "1:1",
+    image_size: str = "1k",
 ) -> Optional[bytes]:
     """Generate an image using multimodal input (text + images).
 
@@ -68,6 +74,7 @@ async def _generate_image_with_input(
                 prompt=prompt,
                 images=input_images,
                 aspect_ratio=aspect_ratio,
+                image_size=image_size,
             )
             if result_bytes:
                 return result_bytes
@@ -82,6 +89,7 @@ async def _generate_image_with_input(
             result_bytes = await chat_lb.generate_image_from_chat(
                 contents=contents,
                 aspect_ratio=aspect_ratio,
+                image_size=image_size,
             )
             if result_bytes:
                 return result_bytes
@@ -93,7 +101,7 @@ async def _generate_image_with_input(
     # Strategy 3: Fallback — pure text prompt (loses input images)
     if lb:
         logger.warning("Falling back to text-only image generation (input images not used)")
-        return await lb.generate_image(prompt=prompt, aspect_ratio=aspect_ratio)
+        return await lb.generate_image(prompt=prompt, aspect_ratio=aspect_ratio, image_size=image_size)
 
     return None
 
@@ -102,11 +110,16 @@ async def _generate_image_with_input(
 async def enhance_image(
     image: UploadFile = File(...),
     instruction: str = Form("Improve overall visual quality and make it publication-ready"),
-    resolution: str = Form("2k"),
+    resolution: str = Form("2K"),
+    aspect_ratio: str = Form("16:9"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Enhance/refine an uploaded image using AI."""
+    """Enhance/refine an uploaded image using AI.
+    
+    resolution: Target resolution — "2K" or "4K". Higher resolution takes longer but yields better quality.
+    aspect_ratio: Target aspect ratio — "16:9", "4:3", "3:4", "1:1", "9:16".
+    """
     content = await image.read()
 
     from app.services.generation_service import _build_load_balancer
@@ -116,7 +129,7 @@ async def enhance_image(
         raise HTTPException(status_code=400, detail="没有可用的 API Key")
 
     image_b64 = base64.b64encode(content).decode()
-    prompt = REFINE_PROMPT.format(instruction=instruction)
+    prompt = REFINE_PROMPT.format(instruction=instruction, aspect_ratio=aspect_ratio, resolution=resolution)
 
     try:
         enhanced_bytes = await _generate_image_with_input(
@@ -124,6 +137,8 @@ async def enhance_image(
             chat_lb=chat_lb,
             prompt=prompt,
             input_images=[{"b64": image_b64, "media_type": "image/png"}],
+            aspect_ratio=aspect_ratio,
+            image_size=resolution,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"增强失败: {e}")
@@ -155,10 +170,16 @@ async def enhance_image(
 async def style_transfer(
     source_image: UploadFile = File(...),
     reference_image: UploadFile = File(...),
+    resolution: str = Form("2K"),
+    aspect_ratio: str = Form("16:9"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Transfer visual style from reference image to source figure (like autofigure-edit)."""
+    """Transfer visual style from reference image to source figure.
+    
+    resolution: Target resolution — "2K" or "4K".
+    aspect_ratio: Target aspect ratio — "16:9", "4:3", "3:4", "1:1", "9:16".
+    """
     source_bytes = await source_image.read()
     ref_bytes = await reference_image.read()
 
@@ -170,16 +191,19 @@ async def style_transfer(
 
     source_b64 = base64.b64encode(source_bytes).decode()
     ref_b64 = base64.b64encode(ref_bytes).decode()
+    prompt = STYLE_TRANSFER_PROMPT.format(aspect_ratio=aspect_ratio, resolution=resolution)
 
     try:
         result_bytes = await _generate_image_with_input(
             image_lb=image_lb,
             chat_lb=chat_lb,
-            prompt=STYLE_TRANSFER_PROMPT,
+            prompt=prompt,
             input_images=[
                 {"b64": source_b64, "media_type": "image/png"},
                 {"b64": ref_b64, "media_type": "image/png"},
             ],
+            aspect_ratio=aspect_ratio,
+            image_size=resolution,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"风格迁移失败: {e}")

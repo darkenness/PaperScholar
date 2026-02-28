@@ -86,12 +86,16 @@ class PolishAgent(BaseAgent):
         polish_prompt = f"Polish this image based on these suggestions:\n\n{suggestions}\n\nGenerate an improved version:"
         polished_bytes = None
 
+        aspect_ratio = data.get("aspect_ratio", "1:1")
+        image_size = data.get("image_size", "1k")
+
         # Try image-to-image first (passes original image to model)
         try:
             polished_bytes = await self.image_lb.generate_image_with_images(
                 prompt=polish_prompt,
                 images=[{"b64": image_b64, "media_type": "image/png"}],
-                aspect_ratio=data.get("aspect_ratio", "1:1"),
+                aspect_ratio=aspect_ratio,
+                image_size=image_size,
             )
         except (AttributeError, NotImplementedError):
             pass
@@ -103,7 +107,8 @@ class PolishAgent(BaseAgent):
             try:
                 polished_bytes = await self.image_lb.generate_image(
                     prompt=polish_prompt,
-                    aspect_ratio=data.get("aspect_ratio", "1:1"),
+                    aspect_ratio=aspect_ratio,
+                    image_size=image_size,
                 )
             except Exception as e:
                 print(f"[Polish] Text-only image generation failed: {e}")

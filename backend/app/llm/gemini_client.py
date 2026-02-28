@@ -74,10 +74,16 @@ class GeminiNativeClient(BaseLLMClient):
         aspect_ratio = kwargs.get("aspect_ratio", "1:1")
         max_attempts = kwargs.get("max_attempts", 5)
 
+        image_size = kwargs.get("image_size", "1k")
+
+        image_config_kwargs = {"aspect_ratio": aspect_ratio}
+        if image_size:
+            image_config_kwargs["image_size"] = image_size
+
         config = types.GenerateContentConfig(
             temperature=1.0,
             response_modalities=["IMAGE"],
-            image_config=types.ImageConfig(aspect_ratio=aspect_ratio),
+            image_config=types.ImageConfig(**image_config_kwargs),
         )
 
         for attempt in range(max_attempts):
@@ -93,7 +99,6 @@ class GeminiNativeClient(BaseLLMClient):
                         if part.inline_data:
                             return part.inline_data.data
 
-                # No image in response — retry
                 if attempt < max_attempts - 1:
                     await _asyncio.sleep(min(10 * (2 ** attempt), 30))
             except Exception as e:
@@ -114,6 +119,7 @@ class GeminiNativeClient(BaseLLMClient):
 
         image_model = kwargs.get("image_model", self.model)
         aspect_ratio = kwargs.get("aspect_ratio", "1:1")
+        image_size = kwargs.get("image_size", "1k")
         max_attempts = kwargs.get("max_attempts", 3)
 
         # Build parts: text prompt + input images
@@ -125,10 +131,14 @@ class GeminiNativeClient(BaseLLMClient):
                 data=img_data,
             )))
 
+        image_config_kwargs = {"aspect_ratio": aspect_ratio}
+        if image_size:
+            image_config_kwargs["image_size"] = image_size
+
         config = types.GenerateContentConfig(
             temperature=1.0,
             response_modalities=["IMAGE"],
-            image_config=types.ImageConfig(aspect_ratio=aspect_ratio),
+            image_config=types.ImageConfig(**image_config_kwargs),
         )
 
         for attempt in range(max_attempts):
@@ -162,6 +172,7 @@ class GeminiNativeClient(BaseLLMClient):
         import asyncio as _asyncio
 
         aspect_ratio = kwargs.get("aspect_ratio", "1:1")
+        image_size = kwargs.get("image_size", "1k")
         max_attempts = kwargs.get("max_attempts", 3)
 
         # Build parts from contents list
@@ -179,10 +190,14 @@ class GeminiNativeClient(BaseLLMClient):
                     mime_type="image/png", data=item,
                 )))
 
+        image_config_kwargs = {"aspect_ratio": aspect_ratio}
+        if image_size:
+            image_config_kwargs["image_size"] = image_size
+
         config = types.GenerateContentConfig(
             temperature=1.0,
             response_modalities=["IMAGE"],
-            image_config=types.ImageConfig(aspect_ratio=aspect_ratio),
+            image_config=types.ImageConfig(**image_config_kwargs),
         )
 
         for attempt in range(max_attempts):

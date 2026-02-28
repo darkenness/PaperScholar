@@ -233,7 +233,11 @@ class VisualizerAgent(BaseAgent):
         else:
             # Diagram mode: use Image generation model directly
             prompt = f"Render an image based on the following detailed description: {desc}\n Note that do not include figure titles in the image. Diagram: "
-            image_bytes = await self.image_lb.generate_image(prompt=prompt, aspect_ratio=data.get("aspect_ratio", "1:1"))
+            image_bytes = await self.image_lb.generate_image(
+                prompt=prompt,
+                aspect_ratio=data.get("aspect_ratio", "1:1"),
+                image_size=data.get("image_size", "1k"),
+            )
 
             if image_bytes:
                 data["image_base64"] = base64.b64encode(image_bytes).decode()

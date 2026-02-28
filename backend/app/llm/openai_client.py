@@ -93,11 +93,17 @@ class OpenAICompatClient(BaseLLMClient):
             }
             size = size_map.get(aspect_ratio, "1024x1024")
 
+        quality = kwargs.get("quality", "high")
+        output_format = kwargs.get("output_format", "png")
+
         payload = {
             "model": kwargs.get("image_model", self.model),
             "prompt": prompt,
             "n": 1,
             "size": size,
+            "quality": quality,
+            "background": "opaque",
+            "output_format": output_format,
             "response_format": "b64_json",
         }
 
