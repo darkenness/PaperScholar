@@ -2,6 +2,7 @@ import base64
 from typing import Any, Optional
 
 from app.llm.base_client import BaseLLMClient
+from app.llm.provider_capabilities import normalize_image_model, normalize_image_size
 
 
 class GeminiNativeClient(BaseLLMClient):
@@ -11,6 +12,9 @@ class GeminiNativeClient(BaseLLMClient):
         super().__init__(api_key=api_key, base_url=base_url, model=model, **kwargs)
         from google import genai
         self._genai_client = genai.Client(api_key=api_key)
+
+    def _image_model(self, override: Optional[str] = None) -> str:
+        return normalize_image_model("gemini", override or self.model)
 
     async def chat(self, messages: list[dict], temperature: float = 0.7, max_tokens: Optional[int] = None, **kwargs) -> str:
         from google.genai import types
@@ -69,14 +73,12 @@ class GeminiNativeClient(BaseLLMClient):
     async def generate_image(self, prompt: str, **kwargs) -> Optional[bytes]:
         from google.genai import types
 
-        image_model = kwargs.get("image_model", self.model)
+        image_model = self._image_model(kwargs.get("image_model"))
         aspect_ratio = kwargs.get("aspect_ratio", "1:1")
-        image_size = kwargs.get("image_size", "1k")
+        image_size = normalize_image_size(kwargs.get("image_size"))
         system_instruction = kwargs.get("system_instruction")
 
-        image_config_kwargs = {"aspect_ratio": aspect_ratio}
-        if image_size:
-            image_config_kwargs["image_size"] = image_size
+        image_config_kwargs = {"aspect_ratio": aspect_ratio, "image_size": image_size}
 
         config = types.GenerateContentConfig(
             temperature=1.0,
@@ -91,25 +93,16 @@ class GeminiNativeClient(BaseLLMClient):
             config=config,
         )
 
-        if response.candidates and response.candidates[0].content.parts:
-            for part in response.candidates[0].content.parts:
-                if part.inline_data:
-                    return part.inline_data.data
-        return None
+        return self._extract_inline_image(response)
 
     async def generate_image_with_images(self, prompt: str, images: list[dict], **kwargs) -> Optional[bytes]:
-        """Generate an image using Gemini with input images (image-to-image).
-        
-        Uses response_modalities=["IMAGE"] with multimodal input containing
-        both the prompt text and input image(s).
-        """
+        """Generate an image using Gemini with input images (image-to-image)."""
         from google.genai import types
 
-        image_model = kwargs.get("image_model", self.model)
+        image_model = self._image_model(kwargs.get("image_model"))
         aspect_ratio = kwargs.get("aspect_ratio", "1:1")
-        image_size = kwargs.get("image_size", "1k")
+        image_size = normalize_image_size(kwargs.get("image_size"))
 
-        # Build parts: text prompt + input images
         parts = [types.Part(text=prompt)]
         for img in images:
             img_data = base64.b64decode(img["b64"]) if isinstance(img["b64"], str) else img["b64"]
@@ -118,14 +111,10 @@ class GeminiNativeClient(BaseLLMClient):
                 data=img_data,
             )))
 
-        image_config_kwargs = {"aspect_ratio": aspect_ratio}
-        if image_size:
-            image_config_kwargs["image_size"] = image_size
-
         config = types.GenerateContentConfig(
             temperature=1.0,
             response_modalities=["IMAGE"],
-            image_config=types.ImageConfig(**image_config_kwargs),
+            image_config=types.ImageConfig(aspect_ratio=aspect_ratio, image_size=image_size),
         )
 
         response = await self._genai_client.aio.models.generate_content(
@@ -134,23 +123,16 @@ class GeminiNativeClient(BaseLLMClient):
             config=config,
         )
 
-        if response.candidates and response.candidates[0].content.parts:
-            for part in response.candidates[0].content.parts:
-                if part.inline_data:
-                    return part.inline_data.data
-        return None
+        return self._extract_inline_image(response)
 
     async def generate_image_from_chat(self, contents: list, **kwargs) -> Optional[bytes]:
-        """Generate an image via chat_with_images, extracting image data from response.
-        
-        Uses response_modalities=["IMAGE"] with multimodal content.
-        """
+        """Generate an image from multimodal content using Gemini image models."""
         from google.genai import types
 
+        image_model = self._image_model(kwargs.get("image_model"))
         aspect_ratio = kwargs.get("aspect_ratio", "1:1")
-        image_size = kwargs.get("image_size", "1k")
+        image_size = normalize_image_size(kwargs.get("image_size"))
 
-        # Build parts from contents list
         parts = []
         for item in contents:
             if isinstance(item, str):
@@ -165,22 +147,22 @@ class GeminiNativeClient(BaseLLMClient):
                     mime_type="image/png", data=item,
                 )))
 
-        image_config_kwargs = {"aspect_ratio": aspect_ratio}
-        if image_size:
-            image_config_kwargs["image_size"] = image_size
-
         config = types.GenerateContentConfig(
             temperature=1.0,
             response_modalities=["IMAGE"],
-            image_config=types.ImageConfig(**image_config_kwargs),
+            image_config=types.ImageConfig(aspect_ratio=aspect_ratio, image_size=image_size),
         )
 
         response = await self._genai_client.aio.models.generate_content(
-            model=self.model,
+            model=image_model,
             contents=[types.Content(role="user", parts=parts)],
             config=config,
         )
 
+        return self._extract_inline_image(response)
+
+    @staticmethod
+    def _extract_inline_image(response) -> Optional[bytes]:
         if response.candidates and response.candidates[0].content.parts:
             for part in response.candidates[0].content.parts:
                 if part.inline_data:
