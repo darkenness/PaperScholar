@@ -19,6 +19,7 @@ from app.config import settings
 from app.core.database import AsyncSessionLocal
 from app.core.security import decrypt_api_key, mask_api_key
 from app.llm.load_balancer import ClientConfig, LoadBalancer
+from app.llm.provider_capabilities import validate_provider_for_model_type
 from app.models.api_key import ApiKeyConfig
 from app.models.generation import GenerationResult, GenerationTask, PipelineEvent
 from app.models.user import User
@@ -29,7 +30,6 @@ async def _get_available_configs(db: AsyncSession, user_id: int, model_type: str
     """Get all available API key configs for a user (own + system), returns list of (config, is_system)."""
     results: list[tuple[ApiKeyConfig, bool]] = []
 
-    # 1. User's own verified keys
     result = await db.execute(
         select(ApiKeyConfig)
         .where(
@@ -44,7 +44,6 @@ async def _get_available_configs(db: AsyncSession, user_id: int, model_type: str
     for cfg in result.scalars().all():
         results.append((cfg, False))
 
-    # 2. System shared keys (for approved users)
     user_result = await db.execute(select(User).where(User.id == user_id))
     user = user_result.scalar_one_or_none()
     if user and user.system_api_approved:
@@ -102,29 +101,17 @@ async def _build_load_balancer(
     key_id: Optional[int] = None,
     model_name: Optional[str] = None,
 ) -> Optional[LoadBalancer]:
-    """Build a LoadBalancer from user's verified API key configs.
-    
-    Selection logic (VoAPI-style):
-    - key_id specified: use only that specific key config
-    - model_name specified: use all keys matching that model_name
-    - neither specified: use all available keys (original behavior)
-    
-    Fallback priority:
-    1. User's own verified keys (priority >= 0)
-    2. System shared keys (priority == -1) if user has system_api_approved
-    """
+    """Build a LoadBalancer from user's verified API key configs."""
     all_configs = await _get_available_configs(db, user_id, model_type)
 
     if not all_configs:
         return None
 
-    # Apply filters
     if key_id is not None:
         all_configs = [(cfg, sys) for cfg, sys in all_configs if cfg.id == key_id]
     elif model_name is not None:
         all_configs = [(cfg, sys) for cfg, sys in all_configs if cfg.model_name == model_name]
     else:
-        # Default: prefer user keys; fall back to system keys only if no user keys
         user_configs = [(cfg, sys) for cfg, sys in all_configs if not sys]
         all_configs = user_configs if user_configs else all_configs
 
@@ -134,6 +121,7 @@ async def _build_load_balancer(
     client_configs = []
     for cfg, _is_system in all_configs:
         try:
+            validate_provider_for_model_type(model_type, cfg.provider)
             raw_key = decrypt_api_key(cfg.api_key_encrypted)
             client_configs.append(
                 ClientConfig(
@@ -145,7 +133,8 @@ async def _build_load_balancer(
                     api_key_id=cfg.id,
                 )
             )
-        except Exception:
+        except Exception as e:
+            logger.warning("Skipping invalid %s API key config %s: %s", model_type, cfg.id, e)
             continue
 
     if not client_configs:
@@ -162,26 +151,19 @@ async def _save_event(db: AsyncSession, task_id: uuid.UUID, event_type: str, eve
 
 
 async def run_generation_task(task_id: uuid.UUID, extra_params: Optional[dict] = None):
-    """Execute a generation task in the background.
-
-    This function is meant to be called from a background worker (Celery)
-    or via asyncio.create_task(). It manages its own DB session.
-    """
+    """Execute a generation task in the background."""
     extra_params = extra_params or {}
     async with AsyncSessionLocal() as db:
-        # Load task
         result = await db.execute(select(GenerationTask).where(GenerationTask.id == task_id))
         task = result.scalar_one_or_none()
         if not task:
             return
 
-        # Update status to running
         task.status = "running"
         task.started_at = datetime.now(timezone.utc)
         await db.commit()
 
         try:
-            # Build load balancers from user's API keys (with optional model selection)
             chat_lb = await _build_load_balancer(
                 db, task.user_id, "chat",
                 key_id=task.chat_key_id,
@@ -195,23 +177,14 @@ async def run_generation_task(task_id: uuid.UUID, extra_params: Optional[dict] =
 
             if not chat_lb:
                 raise RuntimeError("没有可用的 Chat 模型 API Key，请先在 API 配置中添加并验证")
-            if not image_lb:
-                # Fall back to chat LB for image if no dedicated image keys
-                image_lb = chat_lb
-                logger.warning(
-                    "No dedicated image API keys configured. Using chat LB as image fallback. "
-                    "For best results, configure a dedicated image model key (e.g., Gemini image model)."
+            if (task.task_type or "diagram") == "diagram" and not image_lb:
+                raise RuntimeError(
+                    "没有可用的 Image 模型 API Key。请添加并验证 openai_images、openai_compat 或 gemini image key。"
                 )
-                # Warn if the fallback provider doesn't support image generation at all
-                if chat_lb and chat_lb._states:
-                    provider = chat_lb._states[0].config.provider
-                    if provider == "anthropic":
-                        logger.error(
-                            "Anthropic does not support image generation. "
-                            "Diagram generation WILL FAIL. Please add a Gemini or OpenAI image key."
-                        )
+            if not image_lb:
+                # Plot tasks can render through generated matplotlib code and do not need an image model.
+                image_lb = chat_lb
 
-            # Record model info
             if chat_lb._states:
                 cfg = chat_lb._states[0].config
                 task.chat_provider = cfg.provider
@@ -222,20 +195,15 @@ async def run_generation_task(task_id: uuid.UUID, extra_params: Optional[dict] =
                 task.image_model = cfg.model
             await db.commit()
 
-            # Determine dataset path for Retriever
             dataset_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "PaperBananaBench")
             if not os.path.exists(dataset_path):
                 dataset_path = None
 
-            # Create pipeline engine
             engine = PipelineEngine(chat_lb=chat_lb, image_lb=image_lb, dataset_path=dataset_path)
-
-            # SSE event callback with lock to prevent concurrent session writes
             _event_lock = asyncio.Lock()
 
             async def on_event(event_type: str, event_data: dict):
                 async with _event_lock:
-                    # Ensure progress never regresses (monotonic increase guard)
                     if "progress" in event_data:
                         if event_data["progress"] < task.progress:
                             event_data["progress"] = task.progress
@@ -245,7 +213,6 @@ async def run_generation_task(task_id: uuid.UUID, extra_params: Optional[dict] =
                     await _save_event(db, task_id, event_type, event_data)
                     await db.commit()
 
-            # Prepare pipeline data
             data = {
                 "content": task.content,
                 "visual_intent": task.visual_intent,
@@ -257,7 +224,6 @@ async def run_generation_task(task_id: uuid.UUID, extra_params: Optional[dict] =
                 "retriever_pool_size": extra_params.get("retriever_pool_size"),
             }
 
-            # Run pipeline with num_candidates support
             result_data = await engine.run(
                 data=data,
                 mode=task.pipeline_mode or "dev_full",
@@ -266,13 +232,11 @@ async def run_generation_task(task_id: uuid.UUID, extra_params: Optional[dict] =
                 on_event=on_event,
             )
 
-            # Save results (support multiple candidates)
             results_dir = os.path.join(settings.UPLOAD_DIR, "results", str(task_id))
             os.makedirs(results_dir, exist_ok=True)
 
             candidates = result_data.get("candidates", [])
             if not candidates:
-                # Single candidate mode — wrap result_data as the only candidate
                 candidates = [result_data]
 
             for idx, cdata in enumerate(candidates):
@@ -302,7 +266,6 @@ async def run_generation_task(task_id: uuid.UUID, extra_params: Optional[dict] =
                 )
                 db.add(gen_result)
 
-            # Mark complete
             task.status = "completed"
             task.progress = 1.0
             task.current_stage = None
@@ -311,7 +274,6 @@ async def run_generation_task(task_id: uuid.UUID, extra_params: Optional[dict] =
 
             await _save_event(db, task_id, "done", {"status": "completed"})
 
-            # Log API usage for the completed task
             elapsed_ms = int((datetime.now(timezone.utc) - task.started_at).total_seconds() * 1000) if task.started_at else None
             await log_api_usage(
                 user_id=task.user_id,
@@ -322,6 +284,12 @@ async def run_generation_task(task_id: uuid.UUID, extra_params: Optional[dict] =
                 latency_ms=elapsed_ms,
             )
 
+        except asyncio.CancelledError:
+            task.status = "cancelled"
+            task.completed_at = datetime.now(timezone.utc)
+            await db.commit()
+            await _save_event(db, task_id, "done", {"status": "cancelled"})
+            raise
         except Exception as e:
             task.status = "failed"
             task.error_message = str(e)
@@ -329,7 +297,6 @@ async def run_generation_task(task_id: uuid.UUID, extra_params: Optional[dict] =
             await db.commit()
             await _save_event(db, task_id, "error", {"message": str(e)})
 
-            # Log failed API usage
             elapsed_ms = int((datetime.now(timezone.utc) - task.started_at).total_seconds() * 1000) if task.started_at else None
             await log_api_usage(
                 user_id=task.user_id,
