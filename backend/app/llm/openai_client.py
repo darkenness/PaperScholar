@@ -4,24 +4,32 @@ from typing import Any, Optional
 import httpx
 
 from app.llm.base_client import BaseLLMClient
-from app.llm.provider_capabilities import (
-    build_image_config,
-    normalize_image_size,
-    should_use_openai_images_api,
-)
+from app.llm.provider_capabilities import build_image_config, should_use_openai_images_api
 
 
 class OpenAICompatClient(BaseLLMClient):
     """OpenAI-compatible API client.
 
-    Supports two image-generation modes while keeping base URL and model names
-    fully configurable:
-    - OpenAI Images API for gpt-image* / dall-e* models and compatible relays.
-    - Chat Completions image output for OpenRouter/Nano Banana-style models.
+    Image generation supports two explicitly configurable modes:
+    - ``image_api_mode='chat'`` for OpenRouter and chat-completions relays that
+      return image data via ``message.images`` or content parts.
+    - ``image_api_mode='images'`` for OpenAI Images API compatible endpoints such
+      as GPT Image and compatible third-party relays.
+
+    ``base_url`` and ``model`` are intentionally passed through unchanged so the
+    admin UI can freely configure third-party relay URLs and model names.
     """
 
-    def __init__(self, api_key: str, base_url: str = "https://openrouter.ai/api/v1", model: str = "gemini-2.5-pro", **kwargs):
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str = "https://openrouter.ai/api/v1",
+        model: str = "gemini-2.5-pro",
+        image_api_mode: Optional[str] = None,
+        **kwargs,
+    ):
         super().__init__(api_key=api_key, base_url=base_url, model=model, **kwargs)
+        self.image_api_mode = image_api_mode
 
     def _headers(self) -> dict:
         return {
@@ -49,12 +57,10 @@ class OpenAICompatClient(BaseLLMClient):
             return data["choices"][0]["message"]["content"]
 
     async def chat_with_images(self, contents: list[Any], temperature: float = 0.7, max_tokens: Optional[int] = None, system_prompt: Optional[str] = None, **kwargs) -> str:
-        message_content = self._build_chat_content(contents)
-
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": message_content})
+        messages.append({"role": "user", "content": self._build_chat_content(contents)})
 
         payload = {
             "model": self.model,
@@ -75,8 +81,8 @@ class OpenAICompatClient(BaseLLMClient):
             return data["choices"][0]["message"]["content"]
 
     async def generate_image(self, prompt: str, **kwargs) -> Optional[bytes]:
-        image_model = kwargs.get("image_model", self.model)
-        mode = kwargs.get("image_api_mode")
+        image_model = kwargs.get("image_model") or self.model
+        mode = kwargs.get("image_api_mode") or self.image_api_mode
         if should_use_openai_images_api(self.base_url, image_model, mode):
             return await self._generate_image_via_images_api(prompt, image_model, **kwargs)
         return await self._generate_image_via_chat(prompt, image_model, **kwargs)
@@ -84,9 +90,9 @@ class OpenAICompatClient(BaseLLMClient):
     async def generate_image_with_images(self, prompt: str, images: list[dict], **kwargs) -> Optional[bytes]:
         """Image-to-image generation via chat completions.
 
-        This path is used for OpenRouter/Nano Banana-style multimodal image
-        models. Native OpenAI Images API edit/variation support is intentionally
-        not overloaded here because relay behavior varies widely.
+        OpenRouter/Nano Banana-style relays usually expose image editing through
+        chat-completions with multimodal input. Native OpenAI image editing is
+        intentionally not overloaded here because relay support varies.
         """
         user_content: list[dict] = [{"type": "text", "text": prompt}]
         for img in images:
@@ -97,7 +103,7 @@ class OpenAICompatClient(BaseLLMClient):
                 "image_url": {"url": f"data:{media_type};base64,{b64}"},
             })
 
-        image_model = kwargs.get("image_model", self.model)
+        image_model = kwargs.get("image_model") or self.model
         payload = self._build_image_chat_payload(
             model=image_model,
             messages=[{"role": "user", "content": user_content}],
@@ -154,11 +160,7 @@ class OpenAICompatClient(BaseLLMClient):
             messages.append({"role": "system", "content": system_instruction})
         messages.append({"role": "user", "content": prompt})
 
-        payload = self._build_image_chat_payload(
-            model=image_model,
-            messages=messages,
-            kwargs=kwargs,
-        )
+        payload = self._build_image_chat_payload(model=image_model, messages=messages, kwargs=kwargs)
 
         async with httpx.AsyncClient(timeout=180) as client:
             resp = await client.post(
@@ -189,8 +191,7 @@ class OpenAICompatClient(BaseLLMClient):
                 json=payload,
             )
             resp.raise_for_status()
-            data = resp.json()
-            return await self._extract_image_from_images_response(data, client)
+            return await self._extract_image_from_images_response(resp.json(), client)
 
     @staticmethod
     def _map_openai_image_size(aspect_ratio: Optional[str], explicit_size: Optional[str]) -> Optional[str]:
@@ -223,20 +224,16 @@ class OpenAICompatClient(BaseLLMClient):
     def _decode_data_url(url: str) -> Optional[bytes]:
         if not url.startswith("data:") or "," not in url:
             return None
-        b64_str = url.split(",", 1)[1]
-        return base64.b64decode(b64_str)
+        return base64.b64decode(url.split(",", 1)[1])
 
     @staticmethod
     def _extract_image_from_response(data: dict) -> Optional[bytes]:
-        """Extract image bytes from chat-completions image responses.
-
-        Handles OpenRouter's `message.images`, OpenAI-style content parts, and
-        markdown/data-url fallbacks returned by third-party relays.
-        """
+        """Extract image bytes from chat-completions image responses."""
         import re
 
         message = data.get("choices", [{}])[0].get("message", {})
 
+        # OpenRouter image output format: choices[0].message.images[].image_url.url
         for image in message.get("images") or []:
             url = (image.get("image_url") or {}).get("url", "")
             decoded = OpenAICompatClient._decode_data_url(url)
@@ -266,11 +263,10 @@ class OpenAICompatClient(BaseLLMClient):
         return None
 
     async def generate_image_from_chat(self, contents: list, **kwargs) -> Optional[bytes]:
-        user_content = self._build_chat_content(contents)
-        image_model = kwargs.get("image_model", self.model)
+        image_model = kwargs.get("image_model") or self.model
         payload = self._build_image_chat_payload(
             model=image_model,
-            messages=[{"role": "user", "content": user_content}],
+            messages=[{"role": "user", "content": self._build_chat_content(contents)}],
             kwargs=kwargs,
         )
 
