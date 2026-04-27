@@ -1,20 +1,37 @@
 from datetime import datetime, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_current_admin
 from app.core.database import get_db
 from app.core.security import encrypt_api_key, decrypt_api_key, mask_api_key
+from app.llm.provider_capabilities import validate_provider_for_model_type
 from app.models.api_key import ApiApplication, ApiKeyConfig
 from app.models.generation import GenerationTask
 from app.models.system import Announcement, ApiUsageLog, SystemConfig
 from app.models.user import User
 from app.schemas.api_key import ApiApplicationResponse, ApiApplicationReview
 from app.schemas.auth import UserResponse
-from app.api.deps import get_current_admin
 
 router = APIRouter(prefix="/admin", tags=["管理后台"])
+
+
+class SystemKeyCreate(BaseModel):
+    model_type: str
+    provider: str
+    api_key: str
+    base_url: Optional[str] = None
+    model_name: Optional[str] = None
+
+
+class SystemKeyUpdate(BaseModel):
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
+    model_name: Optional[str] = None
 
 
 # ── Users ──
@@ -205,19 +222,23 @@ async def list_system_keys(admin: User = Depends(get_current_admin), db: AsyncSe
 
 @router.post("/system-keys", status_code=status.HTTP_201_CREATED)
 async def add_system_key(
-    model_type: str, provider: str, api_key: str,
-    base_url: str = None, model_name: str = None,
+    req: SystemKeyCreate,
     admin: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
     """Add a system-level API key. Uses priority=-1 as a marker for system keys."""
+    try:
+        validate_provider_for_model_type(req.model_type, req.provider)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     cfg = ApiKeyConfig(
         user_id=admin.id,
-        model_type=model_type,
-        provider=provider,
-        base_url=base_url,
-        api_key_encrypted=encrypt_api_key(api_key),
-        model_name=model_name,
+        model_type=req.model_type,
+        provider=req.provider,
+        base_url=req.base_url,
+        api_key_encrypted=encrypt_api_key(req.api_key),
+        model_name=req.model_name,
         priority=-1,  # marker: system key
         is_verified=False,
     )
@@ -229,7 +250,11 @@ async def add_system_key(
 
 @router.post("/system-keys/{key_id}/verify")
 async def verify_system_key(key_id: int, admin: User = Depends(get_current_admin), db: AsyncSession = Depends(get_db)):
-    """Verify a system API key by making a test request."""
+    """Verify a system API key by making a test request.
+
+    Chat keys use a minimal chat health check. Image keys must return actual
+    image bytes so unsupported providers or incorrect image models fail early.
+    """
     result = await db.execute(select(ApiKeyConfig).where(ApiKeyConfig.id == key_id, ApiKeyConfig.priority == -1))
     cfg = result.scalar_one_or_none()
     if not cfg:
@@ -241,15 +266,27 @@ async def verify_system_key(key_id: int, admin: User = Depends(get_current_admin
     verified = False
     error_msg = ""
     try:
+        validate_provider_for_model_type(cfg.model_type, cfg.provider)
         client = LLMClientFactory.create(
             provider=cfg.provider,
             api_key=raw_key,
             base_url=cfg.base_url,
             model=cfg.model_name or "",
         )
-        verified = await client.health_check()
-        if not verified:
-            error_msg = "health_check 返回 False（API 连接失败或认证无效）"
+        if cfg.model_type == "image":
+            img = await client.generate_image(
+                prompt="A simple black circle on a plain white background.",
+                image_model=cfg.model_name or "",
+                aspect_ratio="1:1",
+                image_size="1K",
+            )
+            verified = bool(img and len(img) > 512)
+            if not verified:
+                error_msg = "图片模型验证失败：未返回有效图片数据"
+        else:
+            verified = await client.health_check()
+            if not verified:
+                error_msg = "health_check 返回 False（API 连接失败或认证无效）"
     except Exception as e:
         error_msg = str(e)
 
@@ -263,7 +300,7 @@ async def verify_system_key(key_id: int, admin: User = Depends(get_current_admin
 @router.put("/system-keys/{key_id}")
 async def update_system_key(
     key_id: int,
-    base_url: str = None, api_key: str = None, model_name: str = None,
+    req: SystemKeyUpdate,
     admin: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -273,13 +310,19 @@ async def update_system_key(
     if not cfg:
         raise HTTPException(status_code=404, detail="系统API Key不存在")
 
-    if base_url is not None:
-        cfg.base_url = base_url or None
-    if api_key is not None and len(api_key) >= 10:
-        cfg.api_key_encrypted = encrypt_api_key(api_key)
+    if req.base_url is not None:
+        cfg.base_url = req.base_url or None
+    if req.api_key is not None and len(req.api_key) >= 10:
+        cfg.api_key_encrypted = encrypt_api_key(req.api_key)
         cfg.is_verified = False
-    if model_name is not None:
-        cfg.model_name = model_name or None
+    if req.model_name is not None:
+        cfg.model_name = req.model_name or None
+        cfg.is_verified = False
+
+    try:
+        validate_provider_for_model_type(cfg.model_type, cfg.provider)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     await db.commit()
     await db.refresh(cfg)
@@ -383,10 +426,6 @@ async def delete_announcement(ann_id: int, admin: User = Depends(get_current_adm
 
 # ── Style Guide Generation (P2-1) ──
 
-from pydantic import BaseModel
-from typing import Optional
-
-
 class StyleGuideGenerateRequest(BaseModel):
     venue: str = "NeurIPS 2025"
     category: str = "diagram"  # diagram or plot
@@ -412,7 +451,6 @@ async def generate_style_guide_endpoint(
     if req.category not in ("diagram", "plot"):
         raise HTTPException(status_code=400, detail="category 必须为 diagram 或 plot")
 
-    # Build reference images list
     reference_images = []
     for idx, b64 in enumerate(req.images_base64):
         caption = req.captions[idx] if req.captions and idx < len(req.captions) else None
@@ -421,7 +459,6 @@ async def generate_style_guide_endpoint(
             "caption": caption or f"Reference {idx + 1}",
         })
 
-    # Build chat load balancer for the admin
     from app.services.generation_service import _build_load_balancer
     try:
         chat_lb = await _build_load_balancer(db, admin.id, "chat")
@@ -432,7 +469,6 @@ async def generate_style_guide_endpoint(
 
     from app.services.style_guide_service import generate_style_guide, save_style_guide
 
-    # Get existing guide path for refinement
     existing_path = None
     if req.save_as_default:
         from app.services.style_guide_service import STYLE_GUIDE_DIR
