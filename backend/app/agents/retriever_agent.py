@@ -1,12 +1,13 @@
-"""Retriever Agent — selects relevant reference examples from the dataset.
-Adapted from PaperBanana's retriever_agent.py logic."""
+"""Retriever Agent — locally ranks relevant reference examples for generation."""
 
 import json
 import random
+import math
+import re
+from collections import Counter
 from typing import Any, Callable, Dict, List, Optional
 
 from app.agents.base_agent import BaseAgent
-from app.services.cost_service import BudgetExceededError
 
 DIAGRAM_RETRIEVER_SYSTEM = """
 # Background & Goal
@@ -200,6 +201,55 @@ class RetrieverAgent(BaseAgent):
 
         return examples
 
+    @staticmethod
+    def _vector_tokens(value: Any) -> List[str]:
+        """Create lightweight local tokens without a remote embedding call.
+
+        Latin words are kept as terms and contiguous CJK text is represented by
+        character bigrams so Chinese queries can be matched as well.
+        """
+        text = str(value or "").lower()
+        tokens: List[str] = []
+        for chunk in re.findall(r"[\u4e00-\u9fff]+|[a-z0-9_]+", text):
+            if re.fullmatch(r"[\u4e00-\u9fff]+", chunk):
+                tokens.extend(chunk[i:i + 2] for i in range(max(1, len(chunk) - 1)))
+            else:
+                tokens.append(chunk)
+        return tokens
+
+    def _local_vector_search(self, query: str, candidates: List[Dict], top_k: int) -> List[Dict]:
+        """Rank candidates locally with a TF-IDF cosine score.
+
+        This intentionally stays dependency-free: the reference library is
+        small enough for an in-process sparse vector pass and no LLM call is
+        needed merely to select examples.
+        """
+        if not candidates or top_k <= 0:
+            return []
+        query_tokens = self._vector_tokens(query)
+        if not query_tokens:
+            return candidates[:top_k]
+        documents = [self._vector_tokens(
+            f"{item.get('visual_intent', '')} {item.get('caption', '')} {item.get('content', '')}"
+        ) for item in candidates]
+        df = Counter(token for doc in documents for token in set(doc))
+        total_docs = len(documents) + 1
+
+        def weights(tokens: List[str]) -> Dict[str, float]:
+            counts = Counter(tokens)
+            return {token: (1.0 + math.log(count)) * math.log(total_docs / (1 + df[token])) for token, count in counts.items()}
+
+        query_vector = weights(query_tokens)
+        query_norm = math.sqrt(sum(value * value for value in query_vector.values())) or 1.0
+        ranked = []
+        for index, doc in enumerate(documents):
+            vector = weights(doc)
+            dot = sum(query_vector.get(token, 0.0) * value for token, value in vector.items())
+            norm = math.sqrt(sum(value * value for value in vector.values())) or 1.0
+            ranked.append((dot / (query_norm * norm), index))
+        ranked.sort(key=lambda item: (-item[0], item[1]))
+        return [candidates[index] for score, index in ranked[:min(top_k, len(candidates))]]
+
     async def process(self, data: Dict[str, Any], on_event: Optional[Callable] = None) -> Dict[str, Any]:
         task_type = data.get("task_type", "diagram")
         retrieval_setting = data.get("retrieval_setting", "auto")
@@ -232,83 +282,21 @@ class RetrieverAgent(BaseAgent):
             await self.emit(on_event, "stage", {"name": "retriever", "status": "done", "progress": 0.1})
             return data
 
-        # Auto retrieval using LLM
-        if not self.chat_lb:
-            data["top10_references"] = []
-            data["retrieved_examples"] = []
-            await self.emit(on_event, "stage", {"name": "retriever", "status": "done", "progress": 0.1, "detail": "no LLM"})
-            return data
-
         content = str(data.get("content", ""))
         visual_intent = data.get("visual_intent", "")
-
-        if task_type == "plot":
-            system_prompt = PLOT_RETRIEVER_SYSTEM
-            target_labels = ["Visual Intent", "Raw Data"]
-            candidate_labels = ["Plot ID", "Visual Intent", "Raw Data"]
-            output_key = "top10_plots"
-        else:
-            system_prompt = DIAGRAM_RETRIEVER_SYSTEM
-            target_labels = ["Caption", "Methodology section"]
-            candidate_labels = ["Diagram ID", "Caption", "Methodology section"]
-            output_key = "top10_diagrams"
-
-        # Build prompt with candidate pool
-        # Use configurable pool_size (default: 200 for diagram, unlimited for plot)
-        pool_size = data.get("retriever_pool_size")
-        if pool_size is not None:
-            pool = candidates if pool_size == 0 else candidates[:pool_size]
-        else:
-            pool = candidates if task_type == "plot" else candidates[:200]
-
-        content_limit = data.get("retriever_content_limit")  # None = no truncation
         top_k = data.get("retriever_top_k", 10)
-
-        user_prompt = f"**Target Input**\n- {target_labels[0]}: {visual_intent}\n- {target_labels[1]}: {content}\n\n**Candidate Pool**\n"
-
-        for idx, item in enumerate(pool):
-            item_content = str(item.get("content", ""))
-            if content_limit and len(item_content) > content_limit:
-                item_content = item_content[:content_limit] + "..."
-            user_prompt += f"Candidate {idx+1}:\n- {candidate_labels[0]}: {item['id']}\n- {candidate_labels[1]}: {item.get('visual_intent', '')}\n- {candidate_labels[2]}: {item_content}\n\n"
-
-        user_prompt += f"Select the Top {top_k} most relevant {task_type}s. Output JSON only."
-
+        pool_size = data.get("retriever_pool_size")
+        pool = candidates if not pool_size else candidates[:pool_size]
+        query = f"{visual_intent}\n{content}"
+        retrieved = self._local_vector_search(query, pool, top_k)
+        retrieved = self._load_reference_images(retrieved, task_type)
         await self.emit(on_event, "intermediate", {
             "type": "text", "stage": "retriever",
-            "content": f"Retriever prompt: {len(pool)} candidates, ~{len(user_prompt)//1000}K chars"
-            + (f", content truncated to {content_limit}" if content_limit else ", full content"),
+            "content": f"本地向量检索：从 {len(pool)} 个候选中选取 {len(retrieved)} 个相关参考，未调用模型重排",
         })
-
-        try:
-            response = await self.chat_lb.chat(
-                messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
-                temperature=0.7,
-            )
-
-            import json_repair
-            parsed = json_repair.loads(response)
-            ref_ids = parsed.get(output_key, [])
-
-            id_to_item = {item["id"]: item for item in candidates}
-            retrieved = [id_to_item[rid] for rid in ref_ids if rid in id_to_item][:top_k]
-            # Load reference images for in-context learning
-            retrieved = self._load_reference_images(retrieved, task_type)
-
-            data["top10_references"] = ref_ids
-            data["retrieved_examples"] = retrieved
-            await self.emit(on_event, "intermediate", {"type": "text", "stage": "retriever", "content": f"Retrieved {len(retrieved)} references: {ref_ids[:5]}..."})
-
-        except BudgetExceededError:
-            raise
-        except Exception as e:
-            await self.emit(on_event,"intermediate",{"type":"text","stage":"retriever","content":"自动检索失败，已回退随机参考；可手动上传参考图固定设计风格。"})
-            print(f"[Retriever] LLM retrieval failed: {e}, falling back to random")
-            sample_size = min(top_k, len(candidates))
-            selected = random.sample(candidates, sample_size) if candidates else []
-            selected = self._load_reference_images(selected, task_type)
-            data["top10_references"] = [item["id"] for item in selected]
-            data["retrieved_examples"] = selected
+        data["top10_references"] = [item["id"] for item in retrieved]
+        data["retrieved_examples"] = retrieved
+        await self.emit(on_event, "intermediate", {"type": "text", "stage": "retriever", "content": f"已选取 {len(retrieved)} 个本地向量最相关参考"})
 
         await self.emit(on_event, "stage", {"name": "retriever", "status": "done", "progress": 0.1})
         return data

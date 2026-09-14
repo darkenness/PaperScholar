@@ -15,9 +15,9 @@ class GenerateRequest(BaseModel):
     aspect_ratio: Optional[str] = "1:1"
     image_size: Optional[str] = Field(default=None, description="指定 image 输出尺寸/质量，例如 1K、2K、4K、1536x1024")
     max_critic_rounds: int = Field(default=1, ge=0, le=5)
-    retriever_content_limit: Optional[int] = Field(default=None, description="Retriever候选内容截断长度，None=不截断（完整内容）")
+    retriever_content_limit: Optional[int] = Field(default=None, description="兼容旧客户端的字段；本地向量检索不再把候选全文发送给模型")
     retriever_top_k: int = Field(default=3, ge=1, le=20, description="Retriever返回的参考示例数量")
-    retriever_pool_size: Optional[int] = Field(default=None, description="Retriever候选池最大条数，None=使用默认值")
+    retriever_pool_size: Optional[int] = Field(default=None, description="本地向量检索候选池最大条数，None=使用整个本地参考库")
     reference_image_ids: Optional[list[int]] = Field(default=None, max_length=10)
     candidate_strategy: str = Field(default="samples",pattern="^(samples|layouts)$")
     quality_guard: bool = True
