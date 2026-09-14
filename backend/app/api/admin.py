@@ -423,7 +423,17 @@ async def generate_style_guide_endpoint(
     return result
 
 
-from app.schemas.api_key import ModelCloneRequest
+from app.schemas.api_key import ModelCloneRequest, ModelDiscoveryRequest
+
+@router.post("/system-keys/discover")
+async def discover_system_connection_models(req: ModelDiscoveryRequest, admin: User = Depends(get_current_admin)):
+    from types import SimpleNamespace
+    from app.core.security import encrypt_api_key
+    try:
+        cfg = SimpleNamespace(provider=req.provider, base_url=normalize_base_url(req.base_url, req.provider), api_key_encrypted=encrypt_api_key(req.api_key.strip()))
+        return await discover_models(cfg)
+    except Exception as exc:
+        raise HTTPException(502, "读取失败；请检查地址、API Key 或供应商是否支持模型列表") from exc
 
 @router.get("/system-keys/{key_id}/models")
 async def read_connection_models(key_id: int, admin: User = Depends(get_current_admin), db: AsyncSession = Depends(get_db)):

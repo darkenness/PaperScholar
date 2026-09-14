@@ -19,6 +19,7 @@ from app.schemas.api_key import (
     ApiKeyResponse,
     ApiKeyUpdate,
     ApiKeyVerifyResponse,
+    ModelDiscoveryRequest,
 )
 
 router = APIRouter(prefix="/api-keys", tags=["API Key管理"])
@@ -26,6 +27,22 @@ router = APIRouter(prefix="/api-keys", tags=["API Key管理"])
 
 from app.services.provider_service import serialize_config as _to_response, probe_config, update_config_fields, discover_models
 from app.llm.endpoint_config import normalize_base_url
+
+
+@router.post("/discover")
+async def discover_connection_models(req: ModelDiscoveryRequest, user: User = Depends(get_current_user)):
+    """Probe a connection before saving a model configuration."""
+    from types import SimpleNamespace
+    from app.core.security import encrypt_api_key
+    try:
+        cfg = SimpleNamespace(
+            provider=req.provider,
+            base_url=normalize_base_url(req.base_url, req.provider),
+            api_key_encrypted=encrypt_api_key(req.api_key.strip()),
+        )
+        return await discover_models(cfg)
+    except Exception as exc:
+        raise HTTPException(502, "读取失败；请检查地址、API Key 或供应商是否支持模型列表") from exc
 
 
 @router.get("", response_model=ApiKeyListResponse)

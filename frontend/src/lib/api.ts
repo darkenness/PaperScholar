@@ -289,6 +289,7 @@ export function providerApi(system=false) {
     remove: (id:number) => request<any>(`${root}/${id}`,{method:'DELETE'}),
     test: (id:number,capability:Capability) => request<any>(`${root}/${id}/verify?capability=${capability}`,{method:'POST'}),
     models: (id:number) => request<{models:string[];message:string}>(`${root}/${id}/models`),
+    discoverDraft: (data:unknown) => request<{models:string[];message:string}>(`${root}/discover`,{method:'POST',body:JSON.stringify(data)}),
     addModel: (id:number,data:unknown) => request<any>(`${root}/${id}/models`,{method:'POST',body:JSON.stringify(data)}),
   };
 }

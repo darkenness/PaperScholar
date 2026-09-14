@@ -40,6 +40,12 @@ class ApiKeyCreate(BaseModel):
         return self
 
 
+class ModelDiscoveryRequest(BaseModel):
+    provider: str = Field(..., pattern="^(openai_compat|openai_images|gemini|anthropic)$")
+    base_url: Optional[str] = None
+    api_key: str = Field(..., min_length=1, max_length=1000)
+
+
 class ApiKeyUpdate(BaseModel):
     base_url: Optional[str] = None
     api_key: Optional[str] = Field(None, min_length=1, max_length=1000)
