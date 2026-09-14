@@ -11,6 +11,7 @@ venv/
 # Environment
 .env
 backend/.env
+frontend/.env.local
 
 # Uploads & generated files
 backend/uploads/
@@ -50,3 +51,4 @@ Nano-Banana/
 
 # Misc
 *.log
+/paperscholar-optimized.tar.gz
