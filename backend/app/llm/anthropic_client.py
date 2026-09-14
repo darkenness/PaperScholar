@@ -89,7 +89,7 @@ class AnthropicClient(BaseLLMClient):
 
     async def generate_image(self, prompt: str, **kwargs) -> Optional[bytes]:
         # Anthropic does not natively support image generation
-        return None
+        raise NotImplementedError("Anthropic does not provide an image-generation endpoint")
 
     async def health_check(self) -> bool:
         try:

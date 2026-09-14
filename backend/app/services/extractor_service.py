@@ -56,10 +56,11 @@ def read_pdf(file_bytes: bytes) -> Optional[str]:
         text_parts = []
         for page in doc:
             text_parts.append(page.get_text())
+        page_count=doc.page_count
         doc.close()
         text = "\n".join(text_parts)
         if text.strip():
-            logger.info(f"Read PDF with PyMuPDF: {len(text)} chars, {doc.page_count} pages")
+            logger.info(f"Read PDF with PyMuPDF: {len(text)} chars, {page_count} pages")
             return text
     except ImportError:
         logger.error("PyMuPDF not installed. Install with: pip install PyMuPDF")

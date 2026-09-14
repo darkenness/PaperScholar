@@ -12,7 +12,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.pipeline import PipelineEngine
@@ -22,10 +22,14 @@ from app.core.security import decrypt_api_key, mask_api_key
 from app.llm.load_balancer import ClientConfig, LoadBalancer
 from app.llm.provider_capabilities import image_model_capabilities, validate_provider_for_model_type
 from app.models.api_key import ApiKeyConfig
-from app.models.generation import GenerationResult, GenerationTask, PipelineEvent
+from app.models.generation import GenerationResult, GenerationTask, PipelineEvent, UploadedReference
 from app.models.user import User
 from app.services.cost_service import BudgetExceededError, CostTracker
 from app.services.usage_service import log_api_usage
+from app.services.artifact_service import write_image,read_image,safe_artifact_path
+from app.services.task_control import assert_task_active
+from app.llm.endpoint_config import effective_model
+from functools import partial
 
 
 async def _get_available_configs(db: AsyncSession, user_id: int, model_type: str) -> list[tuple[ApiKeyConfig, bool]]:
@@ -74,7 +78,9 @@ async def get_available_models(db: AsyncSession, user_id: int) -> dict:
         groups: dict[str, list[dict]] = defaultdict(list)
 
         for cfg, is_system in configs:
-            model_name = cfg.model_name or f"{cfg.provider}_default"
+            model_name = effective_model(cfg.provider,cfg.model_type,cfg.model_name)
+            if not model_name:
+                continue
             try:
                 raw_key = decrypt_api_key(cfg.api_key_encrypted)
                 preview = mask_api_key(raw_key)
@@ -89,6 +95,8 @@ async def get_available_models(db: AsyncSession, user_id: int) -> dict:
                 "api_key_preview": preview,
                 "is_system": is_system,
                 "priority": cfg.priority,
+                "display_name": cfg.display_name,
+                "capability_status": cfg.capability_status or {},
                 **capabilities,
             })
 
@@ -114,6 +122,7 @@ async def _build_load_balancer(
     wait_callback=None,
     cost_tracker: Optional[CostTracker] = None,
     usage_callback=None,
+    before_call=None,
 ) -> Optional[LoadBalancer]:
     """Build a LoadBalancer from user's verified API key configs."""
     all_configs = await _get_available_configs(db, user_id, model_type)
@@ -124,13 +133,18 @@ async def _build_load_balancer(
     if key_id is not None:
         all_configs = [(cfg, sys) for cfg, sys in all_configs if cfg.id == key_id]
     elif model_name is not None:
-        all_configs = [(cfg, sys) for cfg, sys in all_configs if cfg.model_name == model_name]
+        all_configs = [(cfg, sys) for cfg, sys in all_configs if effective_model(cfg.provider,cfg.model_type,cfg.model_name) == model_name]
     else:
         user_configs = [(cfg, sys) for cfg, sys in all_configs if not sys]
         all_configs = user_configs if user_configs else all_configs
+        chosen = effective_model(all_configs[0][0].provider,model_type,all_configs[0][0].model_name)
+        all_configs = [(cfg,sys) for cfg,sys in all_configs if effective_model(cfg.provider,model_type,cfg.model_name)==chosen]
 
     if not all_configs:
         return None
+
+    if key_id is not None and model_name and any(effective_model(cfg.provider,model_type,cfg.model_name) != model_name for cfg,_ in all_configs):
+        raise ValueError("选择的模型与供应商不匹配，请刷新模型列表")
 
     client_configs = []
     for cfg, _is_system in all_configs:
@@ -142,7 +156,8 @@ async def _build_load_balancer(
                     provider=cfg.provider,
                     api_key=raw_key,
                     base_url=cfg.base_url,
-                    model=cfg.model_name or "",
+                    model=effective_model(cfg.provider,model_type,cfg.model_name),
+                    api_options=cfg.api_options or {},
                     priority=max(cfg.priority, 0),
                     api_key_id=cfg.id,
                 )
@@ -161,6 +176,7 @@ async def _build_load_balancer(
         wait_callback=wait_callback,
         cost_tracker=cost_tracker,
         start_index=start_index,
+        before_call=before_call,
     )
 
 
@@ -252,284 +268,167 @@ async def _maybe_generate_diagram_vector(
         return svg_code if vector_export in ("svg", "both") else None, pdf_b64, {
             **meta,
         }
+    except BudgetExceededError:
+        raise
     except Exception as e:
         logger.warning("Diagram vector export failed: %s", e)
         return None, None, {"status": "failed", "error": str(e), "kind": "direct_svg_experimental"}
 
 
-async def run_generation_task(task_id: uuid.UUID, extra_params: Optional[dict] = None):
-    """Execute a generation task in the background."""
-    extra_params = extra_params or {}
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(select(GenerationTask).where(GenerationTask.id == task_id))
-        task = result.scalar_one_or_none()
-        if not task:
-            return
+async def _load_references(db, user_id, ids):
+    if not ids:
+        return []
+    ids=list(dict.fromkeys(ids))
+    refs=(await db.execute(select(UploadedReference).where(UploadedReference.id.in_(ids), UploadedReference.user_id==user_id, UploadedReference.is_deleted==False))).scalars().all()
+    if len(refs)!=len(ids):
+        raise ValueError('部分参考图不存在或无权访问')
+    out=[]
+    for ref in refs:
+        if ref.expires_at and ref.expires_at.replace(tzinfo=timezone.utc)<=datetime.now(timezone.utc):
+            raise ValueError('参考图已过期，请重新上传')
+        out.append({'id':f'uploaded_{ref.id}','content':'User-provided visual reference. Borrow composition/style only, never its scientific claims.','visual_intent':ref.file_name or 'Visual reference','image_base64':read_image(ref.file_path)})
+    return out
 
-        task.status = "running"
-        task.started_at = datetime.now(timezone.utc)
-        await db.commit()
 
-        try:
-            cost_tracker = CostTracker(budget_usd=task.cost_budget_usd)
-
-            chat_lb = await _build_load_balancer(
-                db, task.user_id, "chat",
-                key_id=task.chat_key_id,
-                model_name=task.chat_model,
-                cost_tracker=cost_tracker,
-            )
-            image_lb = await _build_load_balancer(
-                db, task.user_id, "image",
-                key_id=task.image_key_id,
-                model_name=task.image_model,
-                cost_tracker=cost_tracker,
-            )
-
+async def run_generation_task(task_id, extra_params=None):
+    """Claim once, persist previews, finalize conditionally without losing cancellation."""
+    task_id=uuid.UUID(str(task_id))
+    task=None; cost_tracker=None
+    checkpoints={}; completed=[]
+    outcome,error='completed',None
+    try:
+        async with AsyncSessionLocal() as db:
+            claimed=await db.scalar(update(GenerationTask).where(GenerationTask.id==task_id,GenerationTask.status=='pending').values(status='running',started_at=datetime.now(timezone.utc)).returning(GenerationTask.id))
+            await db.commit()
+            if claimed is None:
+                return
+            task=await db.get(GenerationTask,task_id)
+            params={**(task.request_params or {}),**(extra_params or {})}
+            cost_tracker=CostTracker(budget_usd=task.cost_budget_usd)
+            chat_lb=await _build_load_balancer(db,task.user_id,'chat',key_id=task.chat_key_id,model_name=task.chat_model,cost_tracker=cost_tracker,before_call=partial(assert_task_active,task_id))
+            image_lb=await _build_load_balancer(db,task.user_id,'image',key_id=task.image_key_id,model_name=task.image_model,cost_tracker=cost_tracker,before_call=partial(assert_task_active,task_id))
             if not chat_lb:
-                raise RuntimeError("没有可用的 Chat 模型 API Key，请先在 API 配置中添加并验证")
-            if (task.task_type or "diagram") == "diagram" and not image_lb:
-                raise RuntimeError(
-                    "没有可用的 Image 模型 API Key。请添加并验证 openai_images、openai_compat 或 gemini image key。"
-                )
-            if not image_lb:
-                # Plot tasks can render through generated matplotlib code and do not need an image model.
-                image_lb = chat_lb
-
-            if chat_lb._states:
-                cfg = chat_lb._states[0].config
-                task.chat_provider = cfg.provider
-                task.chat_model = cfg.model
-            if image_lb._states:
-                cfg = image_lb._states[0].config
-                task.image_provider = cfg.provider
-                task.image_model = cfg.model
+                raise RuntimeError('没有可用的理解模型，请在供应商设置中配置并测试')
+            if task.task_type=='diagram' and not image_lb:
+                raise RuntimeError('没有可用的生图模型，请配置并测试所需接口')
+            image_lb=image_lb or chat_lb
+            refs=await _load_references(db,task.user_id,params.get('reference_image_ids'))
+            data={**params,'content':task.content,'original_content':task.content,'visual_intent':task.visual_intent,
+                  'aspect_ratio':task.aspect_ratio or '1:1','task_type':task.task_type or 'diagram',
+                  'retrieval_setting':task.retrieval_setting or 'auto','optimize_input':task.optimize_input,
+                  'vector_export':task.vector_export or 'none','user_feedback':task.user_feedback,'retrieved_examples':refs}
+            if task.pipeline_mode=='continue_feedback':
+                src=await db.scalar(select(GenerationResult).where(GenerationResult.id==params.get('continue_from_result_id'),GenerationResult.task_id==task.parent_task_id,GenerationResult.user_id==task.user_id))
+                if src is None or not src.image_path:
+                    raise RuntimeError('来源图片不存在，无法继续修改')
+                src_path=src.image_path; desc=src.stylist_desc or src.planner_desc or task.content
+                if params.get('source_event_id'):
+                    event=await db.scalar(select(PipelineEvent).where(PipelineEvent.id==params['source_event_id'],PipelineEvent.task_id==task.parent_task_id))
+                    details=event.event_data if event else {}
+                    if not details or not details.get('image_path') or details.get('candidate_index')!=src.candidate_index:
+                        raise RuntimeError('所选历史图片与候选结果不匹配')
+                    src_path=details['image_path'];desc=details.get('description') or desc
+                data.update(image_base64=read_image(src_path),planner_description=src.planner_desc or task.content,stylist_description=desc)
             await db.commit()
-
-            dataset_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "PaperBananaBench")
-            if not os.path.exists(dataset_path):
-                dataset_path = None
-
-            engine = PipelineEngine(chat_lb=chat_lb, image_lb=image_lb, dataset_path=dataset_path)
-            _event_lock = asyncio.Lock()
-
-            async def on_event(event_type: str, event_data: dict):
-                async with _event_lock:
-                    if "progress" in event_data:
-                        if event_data["progress"] < task.progress:
-                            event_data["progress"] = task.progress
-                        task.progress = event_data["progress"]
-                    if "name" in event_data:
-                        task.current_stage = event_data.get("name")
-                    await _save_event(db, task_id, event_type, event_data)
+        # The read session is closed before any model I/O; concurrent callbacks
+        # create their own sessions instead of sharing an AsyncSession.
+        event_lock=asyncio.Lock()
+        progress=0.0; branches={}; texts={}
+        async def on_event(kind,event_data):
+            nonlocal progress
+            await assert_task_active(task_id)
+            async with event_lock:
+                payload=dict(event_data)
+                ci=int(payload.get('candidate_index',-1));payload.setdefault('candidate_index',ci)
+                if kind=='intermediate' and payload.get('type')=='text':
+                    texts[(ci,payload.get('stage'))]=payload.get('content','')
+                if kind=='intermediate' and payload.get('image_base64'):
+                    raw=base64.b64decode(payload.pop('image_base64'))
+                    path=await asyncio.to_thread(write_image,task_id,max(ci,0),raw,stem=f"{payload.get('stage','render')}_{payload.get('round',0)}")
+                    payload.update(type='image',image_path=path,image_url=f'/uploads/{path}')
+                    checkpoints.setdefault(max(ci,0),{'candidate_index':max(ci,0),'image_path':path,
+                        'planner_description':texts.get((ci,'planner')) or texts.get((-1,'planner')),
+                        'stylist_description':payload.get('description') or texts.get((ci,'stylist')) or texts.get((-1,'stylist')),
+                        'metadata':{'checkpoint':True}})
+                if 'progress' in payload:
+                    current=min(.99,max(0.,float(payload['progress'])))
+                    if ci>=0 and (task.num_candidates or 1)>1:
+                        branches[ci]=max(branches.get(ci,0),current)
+                        current=sum(branches.values())/task.num_candidates
+                    progress=max(progress,current);payload['progress']=progress
+                async with AsyncSessionLocal() as event_db:
+                    await event_db.execute(update(GenerationTask).where(GenerationTask.id==task_id,GenerationTask.status=='running').values(progress=progress,current_stage=payload.get('name',payload.get('stage'))))
+                    event_db.add(PipelineEvent(task_id=task_id,event_type=kind,event_data=payload))
+                    await event_db.commit()
+        async def on_wait(payload):
+            await on_event('stage',{**payload,'name':'queue','status':'waiting','detail':payload.get('status')})
+        async def on_cost(summary):
+            await on_event('cost',summary)
+        async def on_usage(**details):
+            await on_event('usage',{k:v for k,v in details.items() if k!='error_message'})
+        cost_tracker.on_update=on_cost
+        for lb in {chat_lb,image_lb}:
+            lb.set_wait_callback(on_wait)
+            lb._usage_callback=on_usage
+        dataset=getattr(settings,'REFERENCE_DATASET_DIR','') or os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),'data','PaperBananaBench')
+        engine=PipelineEngine(chat_lb,image_lb,dataset_path=dataset)
+        result=await engine.run(data=data,mode=task.pipeline_mode or 'demo_full',
+            max_critic_rounds=task.max_critic_rounds if task.max_critic_rounds is not None else 3,
+            num_candidates=task.num_candidates or 1,on_event=on_event)
+        await assert_task_active(task_id)
+        for index,item in enumerate(result.get('candidates') or [result]):
+            ci=max(0,item.get('candidate_index',index))
+            b64=item.get('polished_image_base64') or item.get('image_base64')
+            if not b64:
+                continue
+            path=await asyncio.to_thread(write_image,task_id,ci,base64.b64decode(b64),stem='final')
+            desc=item.get('stylist_description') or item.get('planner_description') or ''
+            # Save a usable final raster before optional export can fail/stop.
+            record={'candidate_index':ci,'image_path':path,'planner_description':item.get('planner_description'),
+                'stylist_description':desc,'critic_feedback':{f'round_{i}':item[f'critic_feedback_{i}'] for i in range(5) if item.get(f'critic_feedback_{i}')},
+                'metadata':{**(item.get('metadata') or {}),'candidate_strategy':params.get('candidate_strategy','samples'),
+                    'quality_guard':params.get('quality_guard',True),'candidate_failures':result.get('candidate_failures',[])}}
+            completed.append(record)
+            svg,pdf=item.get('vector_svg'),item.get('vector_pdf_base64')
+            vector={'status':'skipped','requested':task.vector_export or 'none'}
+            if task.task_type=='diagram' and task.vector_export not in {None,'none'}:
+                svg,pdf,vector=await _maybe_generate_diagram_vector(chat_lb,desc,task.content or '',task.task_type,task.vector_export,on_event)
+            if svg:
+                rel=f'results/{task_id}/candidate_{ci}/final.svg';safe_artifact_path(rel).write_text(svg,encoding='utf-8');record['svg_path']=rel
+            if pdf:
+                rel=f'results/{task_id}/candidate_{ci}/final.pdf';safe_artifact_path(rel).write_bytes(base64.b64decode(pdf));record['pdf_path']=rel
+            record['metadata']['vector_export']=vector
+        if not completed and task.pipeline_mode!='dev_retriever':
+            raise RuntimeError('没有有效图片输出；本次运行未完成')
+    except asyncio.CancelledError:
+        outcome,error='cancelled','已停止后续调用；上游已接受的请求可能仍计费。'
+    except Exception as exc:
+        outcome,error='failed',str(exc)
+        logger.exception('Generation failed: %s',task_id)
+    finally:
+        if task is not None:
+            async def finalize():
+                nonlocal outcome
+                async with AsyncSessionLocal() as db:
+                    current=await db.scalar(select(GenerationTask).where(GenerationTask.id==task_id).with_for_update())
+                    if current is None:
+                        return
+                    if current.status=='cancelled':
+                        outcome='cancelled'
+                    elif current.status!='running':
+                        return
+                    current.status=outcome;current.current_stage=None;current.error_message=error;current.completed_at=datetime.now(timezone.utc)
+                    if outcome=='completed':
+                        current.progress=1.
+                    if cost_tracker:
+                        current.cost_details=cost_tracker.summary();current.cost_estimated_usd=current.cost_details['total_usd']
+                    records={item['candidate_index']:item for item in checkpoints.values()}
+                    records.update({item['candidate_index']:item for item in completed})
+                    for item in records.values():
+                        db.add(GenerationResult(task_id=task_id,user_id=task.user_id,candidate_index=item['candidate_index'],
+                            image_path=item['image_path'],svg_path=item.get('svg_path'),pdf_path=item.get('pdf_path'),
+                            planner_desc=item.get('planner_description'),stylist_desc=item.get('stylist_description'),
+                            critic_feedback=item.get('critic_feedback'),metadata_=item.get('metadata')))
+                    db.add(PipelineEvent(task_id=task_id,event_type='done',event_data={'status':outcome,'message':error,'cost':cost_tracker.summary() if cost_tracker else None}))
                     await db.commit()
-
-            async def on_wait(event_data: dict):
-                event_data.setdefault("progress", task.progress)
-                await on_event("stage", event_data)
-
-            async def on_cost_update(summary: dict):
-                task.cost_estimated_usd = summary.get("total_usd")
-                task.cost_details = summary
-                await on_event("cost", summary)
-
-            cost_tracker.on_update = on_cost_update
-
-            if chat_lb:
-                chat_lb.set_wait_callback(on_wait)
-            if image_lb:
-                image_lb.set_wait_callback(on_wait)
-
-            data = {
-                "content": task.content,
-                "visual_intent": task.visual_intent,
-                "aspect_ratio": task.aspect_ratio or "1:1",
-                "image_size": extra_params.get("image_size"),
-                "task_type": task.task_type or "diagram",
-                "retrieval_setting": task.retrieval_setting or "auto",
-                "retriever_content_limit": extra_params.get("retriever_content_limit"),
-                "retriever_top_k": extra_params.get("retriever_top_k", 10),
-                "retriever_pool_size": extra_params.get("retriever_pool_size"),
-                "optimize_input": task.optimize_input,
-                "vector_export": task.vector_export or extra_params.get("vector_export") or "none",
-                "user_feedback": task.user_feedback,
-            }
-
-            if (task.pipeline_mode or "") == "continue_feedback":
-                source_result_id = extra_params.get("continue_from_result_id")
-                source_query = select(GenerationResult).where(GenerationResult.user_id == task.user_id)
-                if source_result_id:
-                    source_query = source_query.where(GenerationResult.id == source_result_id)
-                elif task.parent_task_id:
-                    source_query = source_query.where(
-                        GenerationResult.task_id == task.parent_task_id,
-                        GenerationResult.candidate_index == 0,
-                    )
-                else:
-                    raise RuntimeError("续跑任务缺少来源结果")
-
-                source_result = (await db.execute(source_query.order_by(GenerationResult.candidate_index))).scalars().first()
-                if not source_result:
-                    raise RuntimeError("找不到可续跑的来源结果")
-
-                source_image_b64 = _read_result_image_base64(source_result)
-                if not source_image_b64:
-                    raise RuntimeError("来源结果图片不存在，无法续跑")
-
-                data.update({
-                    "image_base64": source_image_b64,
-                    "planner_description": source_result.planner_desc,
-                    "stylist_description": source_result.stylist_desc or source_result.planner_desc,
-                    "source_result_id": source_result.id,
-                })
-
-            result_data = await engine.run(
-                data=data,
-                mode=task.pipeline_mode or "dev_full",
-                max_critic_rounds=task.max_critic_rounds or 3,
-                num_candidates=task.num_candidates or 1,
-                on_event=on_event,
-            )
-
-            results_dir = os.path.join(settings.UPLOAD_DIR, "results", str(task_id))
-            os.makedirs(results_dir, exist_ok=True)
-
-            candidates = result_data.get("candidates", [])
-            if not candidates:
-                candidates = [result_data]
-
-            for idx, cdata in enumerate(candidates):
-                image_path = None
-                svg_path = None
-                pdf_path = None
-                result_metadata = dict(cdata.get("metadata") or {})
-                result_metadata["input_optimizer"] = cdata.get("input_optimizer") or result_data.get("input_optimizer")
-                result_metadata["vector_export"] = {
-                    "requested": task.vector_export or "none",
-                    "status": "skipped",
-                }
-                img_b64 = cdata.get("polished_image_base64") or cdata.get("image_base64")
-                if img_b64:
-                    try:
-                        image_bytes = base64.b64decode(img_b64)
-                        image_path = os.path.join("results", str(task_id), f"candidate_{idx}.png")
-                        with open(os.path.join(settings.UPLOAD_DIR, image_path), "wb") as f:
-                            f.write(image_bytes)
-                    except Exception as img_err:
-                        logger.warning(f"Failed to save candidate {idx} image: {img_err}")
-
-                vector_export = (task.vector_export or "none").lower()
-                if vector_export != "none":
-                    vector_svg = cdata.get("vector_svg")
-                    vector_pdf_b64 = cdata.get("vector_pdf_base64")
-                    vector_meta = {"requested": vector_export, "status": "skipped"}
-
-                    if task.task_type == "diagram" and not vector_svg and not vector_pdf_b64:
-                        desc_for_vector = (
-                            cdata.get("stylist_description")
-                            or cdata.get("planner_description")
-                            or result_data.get("stylist_description")
-                            or result_data.get("planner_description")
-                            or ""
-                        )
-                        vector_svg, vector_pdf_b64, vector_meta = await _maybe_generate_diagram_vector(
-                            chat_lb=chat_lb,
-                            description=desc_for_vector,
-                            content=task.content or "",
-                            task_type=task.task_type or "diagram",
-                            vector_export=vector_export,
-                            on_event=on_event,
-                        )
-                    elif task.task_type == "plot":
-                        vector_meta = {"requested": vector_export, "status": "generated", "kind": "matplotlib"}
-
-                    if vector_svg:
-                        svg_path = os.path.join("results", str(task_id), f"candidate_{idx}.svg")
-                        with open(os.path.join(settings.UPLOAD_DIR, svg_path), "w", encoding="utf-8") as f:
-                            f.write(vector_svg)
-                        vector_meta["svg_path"] = svg_path
-                    if vector_pdf_b64:
-                        pdf_path = os.path.join("results", str(task_id), f"candidate_{idx}.pdf")
-                        with open(os.path.join(settings.UPLOAD_DIR, pdf_path), "wb") as f:
-                            f.write(base64.b64decode(vector_pdf_b64))
-                        vector_meta["pdf_path"] = pdf_path
-                    if not svg_path and not pdf_path and vector_meta.get("status") == "generated":
-                        vector_meta["status"] = "failed"
-                    result_metadata["vector_export"] = vector_meta
-
-                gen_result = GenerationResult(
-                    task_id=task_id,
-                    user_id=task.user_id,
-                    candidate_index=idx,
-                    image_path=image_path,
-                    svg_path=svg_path,
-                    pdf_path=pdf_path,
-                    planner_desc=cdata.get("planner_description") or result_data.get("planner_description"),
-                    stylist_desc=cdata.get("stylist_description") or result_data.get("stylist_description"),
-                    critic_feedback={
-                        f"round_{i}": cdata.get(f"critic_feedback_{i}")
-                        for i in range(5)
-                        if cdata.get(f"critic_feedback_{i}")
-                    },
-                    metadata_=result_metadata,
-                )
-                db.add(gen_result)
-
-            task.status = "completed"
-            task.progress = 1.0
-            task.current_stage = None
-            task.completed_at = datetime.now(timezone.utc)
-            task.cost_details = cost_tracker.summary()
-            task.cost_estimated_usd = task.cost_details.get("total_usd")
-            await db.commit()
-
-            await _save_event(db, task_id, "done", {"status": "completed", "cost": task.cost_details})
-
-            elapsed_ms = int((datetime.now(timezone.utc) - task.started_at).total_seconds() * 1000) if task.started_at else None
-            await log_api_usage(
-                user_id=task.user_id,
-                task_id=str(task_id),
-                provider=task.chat_provider,
-                model=task.chat_model,
-                success=True,
-                latency_ms=elapsed_ms,
-            )
-
-        except asyncio.CancelledError:
-            task.status = "cancelled"
-            task.completed_at = datetime.now(timezone.utc)
-            if "cost_tracker" in locals():
-                task.cost_details = cost_tracker.summary()
-                task.cost_estimated_usd = task.cost_details.get("total_usd")
-            await db.commit()
-            await _save_event(db, task_id, "done", {"status": "cancelled"})
-            raise
-        except BudgetExceededError as e:
-            task.status = "failed"
-            task.error_message = str(e)
-            task.completed_at = datetime.now(timezone.utc)
-            if "cost_tracker" in locals():
-                task.cost_details = cost_tracker.summary()
-                task.cost_estimated_usd = task.cost_details.get("total_usd")
-            await db.commit()
-            await _save_event(db, task_id, "error", {"message": str(e), "cost": task.cost_details})
-        except Exception as e:
-            task.status = "failed"
-            task.error_message = str(e)
-            task.completed_at = datetime.now(timezone.utc)
-            if "cost_tracker" in locals():
-                task.cost_details = cost_tracker.summary()
-                task.cost_estimated_usd = task.cost_details.get("total_usd")
-            await db.commit()
-            await _save_event(db, task_id, "error", {"message": str(e)})
-
-            elapsed_ms = int((datetime.now(timezone.utc) - task.started_at).total_seconds() * 1000) if task.started_at else None
-            await log_api_usage(
-                user_id=task.user_id,
-                task_id=str(task_id),
-                provider=task.chat_provider,
-                model=task.chat_model,
-                success=False,
-                error_message=str(e),
-                latency_ms=elapsed_ms,
-            )
+            await asyncio.shield(finalize())

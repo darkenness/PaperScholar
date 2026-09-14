@@ -17,6 +17,8 @@ class LLMClientFactory:
         model: str = "",
         **kwargs,
     ) -> BaseLLMClient:
+        from app.llm.endpoint_config import normalize_base_url
+        base_url = normalize_base_url(base_url, provider)
         if provider == "openai_compat":
             return OpenAICompatClient(
                 api_key=api_key,

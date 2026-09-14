@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,18 +20,9 @@ from app.schemas.auth import UserResponse
 router = APIRouter(prefix="/admin", tags=["管理后台"])
 
 
-class SystemKeyCreate(BaseModel):
-    model_type: str
-    provider: str
-    api_key: str
-    base_url: Optional[str] = None
-    model_name: Optional[str] = None
-
-
-class SystemKeyUpdate(BaseModel):
-    base_url: Optional[str] = None
-    api_key: Optional[str] = None
-    model_name: Optional[str] = None
+from app.schemas.api_key import ApiKeyCreate as SystemKeyCreate, ApiKeyUpdate as SystemKeyUpdate
+from app.services.provider_service import serialize_config, probe_config, update_config_fields, discover_models
+from app.llm.endpoint_config import normalize_base_url
 
 
 # ── Users ──
@@ -205,19 +196,7 @@ async def list_system_keys(admin: User = Depends(get_current_admin), db: AsyncSe
         .order_by(ApiKeyConfig.model_type, ApiKeyConfig.id)
     )
     keys = result.scalars().all()
-    items = []
-    for k in keys:
-        try:
-            preview = mask_api_key(decrypt_api_key(k.api_key_encrypted))
-        except Exception:
-            preview = "***"
-        items.append({
-            "id": k.id, "model_type": k.model_type, "provider": k.provider,
-            "base_url": k.base_url, "api_key_preview": preview,
-            "model_name": k.model_name, "is_verified": k.is_verified,
-            "is_enabled": k.is_enabled,
-        })
-    return {"items": items}
+    return {"items": [serialize_config(k).model_dump() for k in keys]}
 
 
 @router.post("/system-keys", status_code=status.HTTP_201_CREATED)
@@ -229,6 +208,7 @@ async def add_system_key(
     """Add a system-level API key. Uses priority=-1 as a marker for system keys."""
     try:
         validate_provider_for_model_type(req.model_type, req.provider)
+        normalize_base_url(req.base_url, req.provider)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -236,7 +216,9 @@ async def add_system_key(
         user_id=admin.id,
         model_type=req.model_type,
         provider=req.provider,
-        base_url=req.base_url,
+        base_url=normalize_base_url(req.base_url, req.provider),
+        display_name=req.display_name,
+        api_options=req.api_options.model_dump(),
         api_key_encrypted=encrypt_api_key(req.api_key),
         model_name=req.model_name,
         priority=-1,  # marker: system key
@@ -249,7 +231,7 @@ async def add_system_key(
 
 
 @router.post("/system-keys/{key_id}/verify")
-async def verify_system_key(key_id: int, admin: User = Depends(get_current_admin), db: AsyncSession = Depends(get_db)):
+async def verify_system_key(key_id: int, capability: str = Query("default", pattern="^(default|chat|vision|image_generation|image_edit)$"), admin: User = Depends(get_current_admin), db: AsyncSession = Depends(get_db)):
     """Verify a system API key by making a test request.
 
     Chat keys use a minimal chat health check. Image keys must return actual
@@ -260,41 +242,9 @@ async def verify_system_key(key_id: int, admin: User = Depends(get_current_admin
     if not cfg:
         raise HTTPException(status_code=404, detail="系统API Key不存在")
 
-    from app.llm.client_factory import LLMClientFactory
-
-    raw_key = decrypt_api_key(cfg.api_key_encrypted)
-    verified = False
-    error_msg = ""
-    try:
-        validate_provider_for_model_type(cfg.model_type, cfg.provider)
-        client = LLMClientFactory.create(
-            provider=cfg.provider,
-            api_key=raw_key,
-            base_url=cfg.base_url,
-            model=cfg.model_name or "",
-        )
-        if cfg.model_type == "image":
-            img = await client.generate_image(
-                prompt="A simple black circle on a plain white background.",
-                image_model=cfg.model_name or "",
-                aspect_ratio="1:1",
-                image_size="1K",
-            )
-            verified = bool(img and len(img) > 512)
-            if not verified:
-                error_msg = "图片模型验证失败：未返回有效图片数据"
-        else:
-            verified = await client.health_check()
-            if not verified:
-                error_msg = "health_check 返回 False（API 连接失败或认证无效）"
-    except Exception as e:
-        error_msg = str(e)
-
-    cfg.is_verified = verified
-    cfg.last_verified_at = datetime.now(timezone.utc)
-    cfg.last_error = error_msg if not verified else None
+    result = await probe_config(cfg, capability)
     await db.commit()
-    return {"is_verified": verified, "message": "验证通过" if verified else f"验证失败: {error_msg}"}
+    return result
 
 
 @router.put("/system-keys/{key_id}")
@@ -310,33 +260,13 @@ async def update_system_key(
     if not cfg:
         raise HTTPException(status_code=404, detail="系统API Key不存在")
 
-    if req.base_url is not None:
-        cfg.base_url = req.base_url or None
-    if req.api_key is not None and len(req.api_key) >= 10:
-        cfg.api_key_encrypted = encrypt_api_key(req.api_key)
-        cfg.is_verified = False
-    if req.model_name is not None:
-        cfg.model_name = req.model_name or None
-        cfg.is_verified = False
-
     try:
-        validate_provider_for_model_type(cfg.model_type, cfg.provider)
+        update_config_fields(cfg, req, system=True)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
+        raise HTTPException(400, str(e))
     await db.commit()
     await db.refresh(cfg)
-
-    try:
-        preview = mask_api_key(decrypt_api_key(cfg.api_key_encrypted))
-    except Exception:
-        preview = "***"
-    return {
-        "id": cfg.id, "model_type": cfg.model_type, "provider": cfg.provider,
-        "base_url": cfg.base_url, "api_key_preview": preview,
-        "model_name": cfg.model_name, "is_verified": cfg.is_verified,
-        "is_enabled": cfg.is_enabled, "message": "已更新",
-    }
+    return {**serialize_config(cfg).model_dump(), "message":"已更新"}
 
 
 @router.delete("/system-keys/{key_id}")
@@ -491,3 +421,36 @@ async def generate_style_guide_endpoint(
         result["saved_path"] = saved_path
 
     return result
+
+
+from app.schemas.api_key import ModelCloneRequest
+
+@router.get("/system-keys/{key_id}/models")
+async def read_connection_models(key_id: int, admin: User = Depends(get_current_admin), db: AsyncSession = Depends(get_db)):
+    source=await db.scalar(select(ApiKeyConfig).where(ApiKeyConfig.id == key_id, ApiKeyConfig.priority == -1))
+    if source is None:
+        raise HTTPException(404, "连接不存在")
+    try:
+        return await discover_models(source)
+    except Exception as exc:
+        raise HTTPException(502, "读取失败；请检查地址或手动输入模型 ID") from exc
+
+@router.post("/system-keys/{key_id}/models", status_code=201)
+async def add_connection_model(key_id: int, req: ModelCloneRequest, admin: User = Depends(get_current_admin), db: AsyncSession = Depends(get_db)):
+    source=await db.scalar(select(ApiKeyConfig).where(ApiKeyConfig.id == key_id, ApiKeyConfig.priority == -1))
+    if source is None:
+        raise HTTPException(404, "连接不存在")
+    try:
+        validate_provider_for_model_type(req.model_type, req.provider)
+        root=normalize_base_url(source.base_url, req.provider)
+        if not req.model_name.strip():
+            raise ValueError("模型 ID 不能为空")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    cfg=ApiKeyConfig(user_id=source.user_id, model_type=req.model_type, provider=req.provider,
+        base_url=root, api_key_encrypted=source.api_key_encrypted, model_name=req.model_name.strip(),
+        display_name=source.display_name, api_options=source.api_options, priority=source.priority, is_verified=False)
+    db.add(cfg)
+    await db.commit()
+    await db.refresh(cfg)
+    return {"id":cfg.id,"message":"模型已添加，请测试所需能力"}

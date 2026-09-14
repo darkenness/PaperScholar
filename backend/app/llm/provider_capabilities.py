@@ -33,8 +33,8 @@ GPT_IMAGE_FIXED_SIZE_OPTIONS = ["1024x1024", "1536x1024", "1024x1536"]
 
 OPENAI_IMAGE_SIZE_OPTIONS = {
     "gpt-image-1": GPT_IMAGE_FIXED_SIZE_OPTIONS,
-    "gpt-image-2": GPT_IMAGE_FIXED_SIZE_OPTIONS,
-    "gpt-image-2-all": GPT_IMAGE_FIXED_SIZE_OPTIONS,
+    "gpt-image-1.5": GPT_IMAGE_FIXED_SIZE_OPTIONS,
+    "gpt-image-1-mini": GPT_IMAGE_FIXED_SIZE_OPTIONS,
 }
 
 
@@ -90,7 +90,9 @@ def image_size_options(provider: str, model: str | None) -> list[str]:
 
 
 def image_size_mode(provider: str, model: str | None) -> str:
-    return "fixed" if image_size_options(provider, model) else "quality"
+    if provider == "openai_images":
+        return "fixed" if image_size_options(provider, model) else "custom"
+    return "quality"
 
 
 def image_model_capabilities(provider: str, model: str | None) -> dict:
@@ -118,7 +120,12 @@ def resolve_openai_image_size(
             return "1024x1536"
         return "1024x1024"
 
+    if requested == "auto":
+        return "auto"
     if requested and "x" in requested:
+        import re
+        if not re.fullmatch(r"[1-9][0-9]{1,4}x[1-9][0-9]{1,4}",requested):
+            raise ValueError("尺寸必须为 WIDTHxHEIGHT 或 auto")
         return requested
     ratio = (aspect_ratio or "").strip()
     if ratio in {"16:9", "3:2", "landscape"}:

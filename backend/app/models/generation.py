@@ -28,6 +28,7 @@ class GenerationTask(Base):
     cost_estimated_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     cost_details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     parent_task_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    request_params: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     user_feedback: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     chat_provider: Mapped[str | None] = mapped_column(String(50), nullable=True)

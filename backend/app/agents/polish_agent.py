@@ -2,11 +2,16 @@
 Adapted from PaperBanana's polish_agent.py."""
 
 import base64
+import io
+from PIL import Image
 import os
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from app.agents.base_agent import BaseAgent
+from app.agents.quality import choose_revision
+from app.services.cost_service import BudgetExceededError
+from app.llm.image_validation import validate_image_bytes
 
 DIAGRAM_SUGGESTION_SYSTEM = """
 You are a senior art director for NeurIPS 2025. Your task is to critique a diagram against a provided style guide.
@@ -69,10 +74,20 @@ class PolishAgent(BaseAgent):
     async def process(self, data: Dict[str, Any], on_event: Optional[Callable] = None) -> Dict[str, Any]:
         task_type = data.get("task_type", "diagram")
         image_b64 = data.get("image_base64")
+        if task_type=="plot":
+            return await self._skip(data,on_event,"统计图保留代码渲染，不通过图像模型改写数据")
 
         if not image_b64:
             await self.emit(on_event, "stage", {"name": "polish", "status": "skipped", "detail": "no image"})
             return data
+
+        try:
+            source_bytes = base64.b64decode(image_b64, validate=True)
+            validate_image_bytes(source_bytes)
+            with Image.open(io.BytesIO(source_bytes)) as source_image:
+                source_mime = Image.MIME.get(source_image.format, "image/png")
+        except Exception:
+            return await self._skip(data, on_event, "原图不是有效图片，未发起精修")
 
         await self.emit(on_event, "stage", {"name": "polish", "status": "running", "progress": 0.85})
 
@@ -86,24 +101,22 @@ class PolishAgent(BaseAgent):
             suggestions = await self.chat_lb.chat_with_images(
                 contents=[
                     f"Style Guide:\n{style_guide}\n\nAnalyze the image and list up to 10 specific improvement suggestions:",
-                    {"type": "image_base64", "data": image_b64, "media_type": "image/png"},
+                    {"type": "image_base64", "data": image_b64, "media_type": source_mime},
                 ],
                 temperature=0.7,
                 system_prompt=suggestion_system,
             )
+        except BudgetExceededError:
+            raise
         except Exception:
-            suggestions = await self.chat_lb.chat(
-                messages=[
-                    {"role": "system", "content": suggestion_system},
-                    {"role": "user", "content": f"Style Guide:\n{style_guide}\n\nBased on the style guide, suggest 10 improvements for a {task_type}."},
-                ],
-                temperature=0.7,
-            )
+            return await self._skip(data, on_event, "视觉检查失败，已保留原图；未改用无图检查")
+        if not isinstance(suggestions, str) or not suggestions.strip():
+            return await self._skip(data, on_event, "视觉检查未返回有效建议，已保留原图")
 
         data["polish_suggestions"] = suggestions
         await self.emit(on_event, "intermediate", {"type": "text", "stage": "polish", "content": f"Suggestions: {suggestions[:300]}..."})
 
-        if "No changes needed" in suggestions:
+        if suggestions.strip().rstrip(".!").lower() == "no changes needed":
             await self.emit(on_event, "stage", {"name": "polish", "status": "done", "progress": 0.95, "detail": "no changes needed"})
             return data
 
@@ -121,29 +134,40 @@ class PolishAgent(BaseAgent):
         try:
             polished_bytes = await self.image_lb.generate_image_with_images(
                 prompt=polish_prompt,
-                images=[{"b64": image_b64, "media_type": "image/png"}],
+                images=[{"b64": image_b64, "media_type": source_mime}],
                 aspect_ratio=aspect_ratio,
                 image_size=image_size,
+                system_instruction=polish_system,
             )
+        except BudgetExceededError:
+            raise
         except (AttributeError, NotImplementedError):
             pass
         except Exception as e:
             print(f"[Polish] Image-to-image generation failed: {e}")
 
-        # Fallback: text-only image generation (loses original image context)
+        # Editing must keep its image condition. A failed edit is not a text-to-image task.
         if not polished_bytes:
-            try:
-                polished_bytes = await self.image_lb.generate_image(
-                    prompt=polish_prompt,
-                    aspect_ratio=aspect_ratio,
-                    image_size=image_size,
-                )
-            except Exception as e:
-                print(f"[Polish] Text-only image generation failed: {e}")
+            return await self._skip(data, on_event, "带图编辑失败，已保留原图；未自动重新构图")
+        try:
+            validate_image_bytes(polished_bytes)
+        except Exception:
+            return await self._skip(data, on_event, "精修返回无效图片，已保留原图")
 
-        if polished_bytes:
-            data["polished_image_base64"] = base64.b64encode(polished_bytes).decode()
-            await self.emit(on_event, "intermediate", {"type": "image_ready", "stage": "polish"})
+        candidate=base64.b64encode(polished_bytes).decode()
+        await self.emit(on_event,"intermediate",{"type":"image_ready","stage":"polish","round":data.get("_render_round",0)+1,"image_base64":candidate,"description":data.get("stylist_description") or data.get("planner_description")})
+        accept,reason=True,"精修完成"
+        if data.get("quality_guard",True):
+            accept,reason=await choose_revision(self.chat_lb,image_b64,candidate,data)
+        await self.emit(on_event,"selection",{"stage":"polish","accepted":accept,"reason":reason})
+        if accept:
+            data["polished_image_base64"]=candidate
 
         await self.emit(on_event, "stage", {"name": "polish", "status": "done", "progress": 0.95})
+        return data
+
+    async def _skip(self, data, on_event, reason):
+        data.pop("polished_image_base64", None)
+        data["metadata"] = {**(data.get("metadata") or {}), "polish": {"status": "skipped", "reason": reason}}
+        await self.emit(on_event, "stage", {"name": "polish", "status": "skipped", "detail": reason, "progress": 0.95})
         return data

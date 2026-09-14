@@ -2,8 +2,8 @@ import asyncio
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from fastapi import APIRouter, Depends, HTTPException, Query, Header, status
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
@@ -20,12 +20,14 @@ from app.schemas.generation import (
     TaskCreateResponse,
     TaskStatusResponse,
 )
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_stream_user
 
 router = APIRouter(prefix="/generate", tags=["图表生成"])
 
 # Track background tasks
-_background_tasks: dict[str, asyncio.Task] = {}
+from app.services.task_control import launch_task, cancel_local_task
+from app.services.artifact_service import safe_artifact_path
+from app.services.generation_service import _build_load_balancer, _load_references
 
 
 @router.get("/available-models", response_model=AvailableModelsResponse)
@@ -45,7 +47,20 @@ async def create_generation_task(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    try:
+        chat=await _build_load_balancer(db,user.id,"chat",req.chat_key_id,req.chat_model_name)
+        image=await _build_load_balancer(db,user.id,"image",req.image_key_id,req.image_model_name) if req.task_type=="diagram" else None
+        if not chat or (req.task_type=="diagram" and not image):
+            raise ValueError("请先配置并测试理解模型与所需生图模型")
+        await _load_references(db,user.id,req.reference_image_ids)
+        if req.retrieval_setting=="manual" and not req.reference_image_ids:
+            raise ValueError("手动参考需要至少一张参考图")
+        if req.pipeline_mode=="dev_polish":
+            raise ValueError("请通过已生成图片的继续修改或图片精修入口进行操作")
+    except ValueError as exc:
+        raise HTTPException(400,str(exc))
     task = GenerationTask(
+        request_params=req.model_dump(mode="json"),
         user_id=user.id,
         task_type=req.task_type,
         content=req.content,
@@ -77,13 +92,7 @@ async def create_generation_task(
         "image_size": req.image_size,
         "vector_export": req.vector_export,
     }
-    bg_task = asyncio.create_task(run_generation_task(task.id, extra_params=extra_params))
-    _background_tasks[str(task.id)] = bg_task
-
-    # Cleanup finished tasks
-    for tid in list(_background_tasks.keys()):
-        if _background_tasks[tid].done():
-            del _background_tasks[tid]
+    launch_task(task.id,run_generation_task(task.id))
 
     return TaskCreateResponse(
         task_id=task.id,
@@ -103,12 +112,12 @@ async def continue_generation_task(
         select(GenerationTask).where(
             GenerationTask.id == task_id,
             GenerationTask.user_id == user.id,
-            GenerationTask.status == "completed",
+            GenerationTask.status.in_(["completed","failed","cancelled"]),
         )
     )
     parent = parent_result.scalar_one_or_none()
     if not parent:
-        raise HTTPException(status_code=404, detail="找不到可续跑的已完成任务")
+        raise HTTPException(status_code=404, detail="找不到可续跑的历史任务")
 
     source_result_query = select(GenerationResult).where(
         GenerationResult.task_id == task_id,
@@ -122,7 +131,16 @@ async def continue_generation_task(
     if not source_result:
         raise HTTPException(status_code=404, detail="找不到可续跑的来源结果")
 
+    if req.source_event_id is not None:
+        event=await db.scalar(select(PipelineEvent).where(PipelineEvent.id==req.source_event_id,PipelineEvent.task_id==parent.id))
+        details=event.event_data if event else {}
+        if not details or not details.get("image_path") or details.get("candidate_index")!=source_result.candidate_index:
+            raise HTTPException(400,"所选历史图片与候选结果不匹配")
+    params={**(parent.request_params or {}),**req.model_dump(mode="json"),"continue_from_result_id":source_result.id,"reference_image_ids":[]}
+    if req.image_size is None:
+        params["image_size"]=(parent.request_params or {}).get("image_size")
     task = GenerationTask(
+        request_params=params,
         user_id=user.id,
         task_type=parent.task_type,
         content=parent.content,
@@ -153,12 +171,7 @@ async def continue_generation_task(
         "image_size": req.image_size,
         "vector_export": req.vector_export,
     }
-    bg_task = asyncio.create_task(run_generation_task(task.id, extra_params=extra_params))
-    _background_tasks[str(task.id)] = bg_task
-
-    for tid in list(_background_tasks.keys()):
-        if _background_tasks[tid].done():
-            del _background_tasks[tid]
+    launch_task(task.id,run_generation_task(task.id))
 
     return TaskCreateResponse(
         task_id=task.id,
@@ -170,17 +183,16 @@ async def continue_generation_task(
 @router.get("/{task_id}/stream")
 async def stream_task_events(
     task_id: uuid.UUID,
-    token: str = Query(..., description="JWT token for SSE auth (EventSource can't send headers)"),
+    after: int = Query(0, ge=0),
+    last_event_id: str | None = Header(None, alias="Last-Event-ID"),
+    user: User = Depends(get_stream_user),
     db: AsyncSession = Depends(get_db),
 ):
-    # Authenticate via query param since browser EventSource doesn't support custom headers
-    from app.core.security import decode_access_token
-    from sqlalchemy import select as sa_select
-
-    payload = decode_access_token(token)
-    if not payload:
-        raise HTTPException(status_code=401, detail="无效的Token")
-    user_id = int(payload.get("sub", 0))
+    user_id=user.id
+    try:
+        cursor=max(after,int(last_event_id or 0))
+    except ValueError:
+        raise HTTPException(400,"Invalid event cursor")
 
     result = await db.execute(
         select(GenerationTask).where(
@@ -196,7 +208,7 @@ async def stream_task_events(
 
     async def event_generator():
         """Use independent DB sessions per poll cycle to avoid stale/closed session issues."""
-        last_event_id = 0
+        last_event_id = cursor
         while True:
             try:
                 async with AsyncSessionLocal() as poll_db:
@@ -210,18 +222,21 @@ async def stream_task_events(
                     for event in new_events:
                         last_event_id = event.id
                         yield {
+                            "id": str(event.id),
                             "event": event.event_type,
                             "data": _json.dumps(event.event_data, ensure_ascii=False),
                         }
 
                     task_result = await poll_db.execute(
-                        select(GenerationTask.status).where(GenerationTask.id == task_id)
+                        select(GenerationTask.status,GenerationTask.error_message).where(GenerationTask.id == task_id)
                     )
-                    current_status = task_result.scalar_one_or_none()
-                    if current_status in ("completed", "failed", "cancelled"):
+                    row=task_result.first()
+                    current_status=row[0] if row else None
+                    error_message=row[1] if row else "任务不存在"
+                    if current_status in ("completed", "failed", "cancelled") or current_status is None:
                         yield {
                             "event": "done",
-                            "data": _json.dumps({"task_id": str(task_id), "status": current_status}),
+                            "data": _json.dumps({"task_id":str(task_id),"status":current_status or "failed","message":error_message}),
                         }
                         break
             except Exception as e:
@@ -282,6 +297,7 @@ async def get_task_status(
         cost_estimated_usd=task.cost_estimated_usd,
         cost_budget_usd=task.cost_budget_usd,
         cost_details=task.cost_details,
+        request_params=task.request_params,
     )
 
 
@@ -350,7 +366,7 @@ async def delete_task(
 ):
     """Delete a generation task and its results."""
     from sqlalchemy.orm import selectinload
-    import os, shutil
+    import shutil
 
     result = await db.execute(
         select(GenerationTask)
@@ -360,17 +376,14 @@ async def delete_task(
     task = result.scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
-    if task.status == "running":
+    if task.status in {"pending","running"}:
         raise HTTPException(status_code=400, detail="运行中的任务不能删除，请先取消")
 
-    # Delete files on disk
-    for r in task.results:
-        if r.image_path:
-            abs_path = os.path.join(settings.UPLOAD_DIR, r.image_path)
-            parent = os.path.dirname(abs_path)
-            if os.path.isdir(parent):
-                shutil.rmtree(parent, ignore_errors=True)
-                break
+    # All generated artifacts live below this task-specific directory. Resolve
+    # it through the same boundary check used for downloads before removing it.
+    task_root = safe_artifact_path(f"results/{task_id}")
+    if task_root.is_dir():
+        shutil.rmtree(task_root)
 
     await db.delete(task)
     await db.commit()
@@ -394,118 +407,35 @@ async def cancel_task(
     if task.status not in ("pending", "running"):
         raise HTTPException(status_code=400, detail="只能取消待执行或运行中的任务")
 
-    task.status = "cancelled"
-    task.completed_at = datetime.now(timezone.utc)
+    changed=await db.scalar(update(GenerationTask).where(GenerationTask.id==task_id,GenerationTask.status.in_(["pending","running"])).values(status="cancelled",completed_at=datetime.now(timezone.utc)).returning(GenerationTask.id))
+    if changed is None:
+        raise HTTPException(409,"任务已结束，请刷新")
+    db.add(PipelineEvent(task_id=task_id,event_type="done",event_data={"status":"cancelled"}))
     await db.commit()
-    return {"message": "任务已取消"}
+    cancel_local_task(task_id)
+    return {"message":"已停止后续执行；上游已提交的请求可能仍计费"}
 
 
 @router.get("/{task_id}/download")
-async def download_task_results(
-    task_id: uuid.UUID,
-    token: str = Query(None, description="JWT token (for browser download, since window.open can't send headers)"),
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Download all result images for a task as a ZIP file."""
-    import io
-    import zipfile
+async def download_task_results(task_id: uuid.UUID, user: User = Depends(get_stream_user), db: AsyncSession = Depends(get_db)):
+    import io,zipfile
     from fastapi.responses import StreamingResponse
-    from app.config import settings
-
-    # If token is provided via query param, override the user from it
-    if token:
-        from app.core.security import decode_access_token
-        payload = decode_access_token(token)
-        if payload:
-            token_user_id = int(payload.get("sub", 0))
-            if token_user_id:
-                result = await db.execute(
-                    select(GenerationTask).where(
-                        GenerationTask.id == task_id, GenerationTask.user_id == token_user_id
-                    )
-                )
-                task = result.scalar_one_or_none()
-                if task:
-                    # Skip the normal auth-based query below
-                    results_result = await db.execute(
-                        select(GenerationResult)
-                        .where(GenerationResult.task_id == task_id)
-                        .order_by(GenerationResult.candidate_index)
-                    )
-                    results = results_result.scalars().all()
-                    if task.status != "completed":
-                        raise HTTPException(status_code=400, detail="任务未完成，无法下载")
-                    if not results:
-                        raise HTTPException(status_code=404, detail="无可下载的结果")
-
-                    import os
-                    buf = io.BytesIO()
-                    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                        for r in results:
-                            if r.image_path:
-                                abs_path = os.path.join(settings.UPLOAD_DIR, r.image_path)
-                                if os.path.exists(abs_path):
-                                    zf.write(abs_path, f"candidate_{r.candidate_index}.png")
-                            if r.svg_path:
-                                abs_path = os.path.join(settings.UPLOAD_DIR, r.svg_path)
-                                if os.path.exists(abs_path):
-                                    zf.write(abs_path, f"candidate_{r.candidate_index}.svg")
-                            if r.pdf_path:
-                                abs_path = os.path.join(settings.UPLOAD_DIR, r.pdf_path)
-                                if os.path.exists(abs_path):
-                                    zf.write(abs_path, f"candidate_{r.candidate_index}.pdf")
-                    buf.seek(0)
-                    return StreamingResponse(
-                        buf,
-                        media_type="application/zip",
-                        headers={"Content-Disposition": f"attachment; filename=task_{str(task_id)[:8]}_results.zip"},
-                    )
-
-    result = await db.execute(
-        select(GenerationTask).where(
-            GenerationTask.id == task_id, GenerationTask.user_id == user.id
-        )
-    )
-    task = result.scalar_one_or_none()
-    if not task:
-        raise HTTPException(status_code=404, detail="任务不存在")
-    if task.status != "completed":
-        raise HTTPException(status_code=400, detail="任务未完成，无法下载")
-
-    results_result = await db.execute(
-        select(GenerationResult)
-        .where(GenerationResult.task_id == task_id)
-        .order_by(GenerationResult.candidate_index)
-    )
-    results = results_result.scalars().all()
-
+    task=await db.scalar(select(GenerationTask).where(GenerationTask.id==task_id,GenerationTask.user_id==user.id))
+    if task is None:
+        raise HTTPException(404,"任务不存在")
+    results=(await db.execute(select(GenerationResult).where(GenerationResult.task_id==task_id).order_by(GenerationResult.candidate_index))).scalars().all()
     if not results:
-        raise HTTPException(status_code=404, detail="无可下载的结果")
-
-    import os
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for r in results:
-            if r.image_path:
-                abs_path = os.path.join(settings.UPLOAD_DIR, r.image_path)
-                if os.path.exists(abs_path):
-                    zf.write(abs_path, f"candidate_{r.candidate_index}.png")
-            if r.svg_path:
-                abs_path = os.path.join(settings.UPLOAD_DIR, r.svg_path)
-                if os.path.exists(abs_path):
-                    zf.write(abs_path, f"candidate_{r.candidate_index}.svg")
-            if r.pdf_path:
-                abs_path = os.path.join(settings.UPLOAD_DIR, r.pdf_path)
-                if os.path.exists(abs_path):
-                    zf.write(abs_path, f"candidate_{r.candidate_index}.pdf")
-
+        raise HTTPException(404,"暂无可下载结果")
+    buf=io.BytesIO()
+    with zipfile.ZipFile(buf,"w",zipfile.ZIP_DEFLATED) as archive:
+        for result in results:
+            for relative in (result.image_path,result.svg_path,result.pdf_path):
+                if relative:
+                    path=safe_artifact_path(relative)
+                    if path.is_file():
+                        archive.write(path,f"candidate_{result.candidate_index}{path.suffix}")
     buf.seek(0)
-    return StreamingResponse(
-        buf,
-        media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename=task_{str(task_id)[:8]}_results.zip"},
-    )
+    return StreamingResponse(buf,media_type="application/zip",headers={"Content-Disposition":f"attachment; filename=task_{str(task_id)[:8]}_results.zip"})
 
 
 @router.post("/results/{result_id}/favorite")

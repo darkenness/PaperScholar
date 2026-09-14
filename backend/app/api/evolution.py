@@ -2,6 +2,7 @@
 Implements P1-3 from the dev plan."""
 
 import logging
+import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -23,6 +24,8 @@ class EvolutionStage(BaseModel):
     name: str
     status: str
     round: Optional[int] = None
+    candidate_index: int = 0
+    image_url: Optional[str] = None
     description: Optional[str] = None
     image_available: bool = False
     suggestions: Optional[str] = None
@@ -38,7 +41,7 @@ class EvolutionResponse(BaseModel):
 
 @router.get("/{task_id}/evolution", response_model=EvolutionResponse)
 async def get_pipeline_evolution(
-    task_id: str,
+    task_id: uuid.UUID,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -65,60 +68,11 @@ async def get_pipeline_evolution(
     events_result = await db.execute(
         select(PipelineEvent).where(
             PipelineEvent.task_id == task_id,
-        ).order_by(PipelineEvent.created_at)
+        ).order_by(PipelineEvent.id)
     )
     events = events_result.scalars().all()
 
-    # Build evolution stages from events
-    stages: list[EvolutionStage] = []
-    seen_stages = set()
-
-    for event in events:
-        data = event.event_data or {}
-        etype = event.event_type
-
-        if etype == "stage":
-            stage_name = data.get("name", "unknown")
-            stage_status = data.get("status", "unknown")
-            round_num = data.get("round")
-
-            # Create a unique key for deduplication
-            key = f"{stage_name}_{round_num}" if round_num is not None else stage_name
-
-            if stage_status == "done" and key not in seen_stages:
-                seen_stages.add(key)
-                stages.append(EvolutionStage(
-                    name=stage_name,
-                    status=stage_status,
-                    round=round_num,
-                    timestamp=event.created_at.isoformat() if event.created_at else None,
-                ))
-
-        elif etype == "intermediate":
-            itype = data.get("type", "")
-            stage_name = data.get("stage", "")
-
-            if itype == "text" and stage_name and stages:
-                # Attach description to the latest matching stage
-                for s in reversed(stages):
-                    if s.name == stage_name:
-                        content = data.get("content", "")
-                        if s.description:
-                            s.description += "\n" + content
-                        else:
-                            s.description = content
-
-                        # Check for critic suggestions
-                        if stage_name == "critic":
-                            s.suggestions = content
-                        break
-
-            elif itype == "image_ready" and stages:
-                # Mark the latest stage as having an image
-                for s in reversed(stages):
-                    if s.name == stage_name or not stage_name:
-                        s.image_available = True
-                        break
+    stages = build_evolution_stages(events)
 
     return EvolutionResponse(
         task_id=str(task_id),
@@ -126,3 +80,51 @@ async def get_pipeline_evolution(
         pipeline_mode=task.pipeline_mode or "unknown",
         stages=stages,
     )
+
+
+def build_evolution_stages(events) -> list[EvolutionStage]:
+    """Merge events by explicit candidate/stage/round; do not wait for 'done'.
+
+    Missing legacy identifiers cannot be reconstructed; they remain candidate 0.
+    Producers should include candidate_index and round on every event.
+    """
+    stages = {}
+    active_round = {}
+    for event in events:
+        data = event.event_data or {}
+        event_type = event.event_type
+        if event_type not in {"stage", "intermediate"}:
+            continue
+        name = data.get("name") if event_type == "stage" else data.get("stage")
+        if not name:
+            continue
+        candidate = data.get("candidate_index", data.get("candidate", 0))
+        candidate = 0 if candidate is None else int(candidate)
+        pair = (candidate, name)
+        if "round" in data:
+            round_num = data["round"]
+            active_round[pair] = round_num
+        else:
+            round_num = active_round.get(pair)
+        key = (candidate, name, round_num)
+        stage = stages.get(key)
+        if stage is None:
+            stage = EvolutionStage(
+                name=name, status="running", candidate_index=candidate, round=round_num,
+                timestamp=event.created_at.isoformat() if event.created_at else None,
+            )
+            stages[key] = stage
+        if event_type == "stage":
+            stage.status = data.get("status", stage.status)
+            if data.get("detail") and not stage.description:
+                stage.description = data["detail"]
+        elif data.get("type") == "text":
+            content = data.get("content") or ""
+            stage.description = (stage.description + "\n" + content) if stage.description else content
+            if name == "critic":
+                stage.suggestions = content
+        elif data.get("type") in {"image_ready", "image"}:
+            stage.image_available = True
+            if data.get("image_url"):
+                stage.image_url = data["image_url"]
+    return list(stages.values())

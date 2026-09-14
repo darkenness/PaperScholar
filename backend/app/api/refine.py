@@ -51,34 +51,14 @@ async def _generate_image_with_input(
     aspect_ratio: str = "1:1",
     image_size: str = "1k",
 ) -> Optional[bytes]:
-    """Generate an image using multimodal input (text + images).
-
-    Uses generate_image_with_images which handles both Gemini native and
-    OpenAI-compat providers. Falls back to text-only generation only if
-    the method is not supported at all (AttributeError/NotImplementedError).
-    """
-    lb = image_lb or chat_lb
-    if not lb:
-        return None
-
-    # Primary: image-to-image generation (passes original image to model)
-    try:
-        result_bytes = await lb.generate_image_with_images(
-            prompt=prompt,
-            images=input_images,
-            aspect_ratio=aspect_ratio,
-            image_size=image_size,
-        )
-        if result_bytes:
-            return result_bytes
-    except (AttributeError, NotImplementedError):
-        logger.info("generate_image_with_images not supported, trying fallback")
-    except Exception as e:
-        logger.warning(f"generate_image_with_images failed: {e}")
-
-    # Fallback: text-only image generation (loses input images)
-    logger.warning("Falling back to text-only image generation (input images not used)")
-    return await lb.generate_image(prompt=prompt, aspect_ratio=aspect_ratio, image_size=image_size)
+    """Editing requires the original image; never silently change to text-only."""
+    from app.agents.quality import image_part
+    from app.llm.image_validation import validate_image_bytes
+    if image_lb is None:
+        raise ValueError("请配置支持图片编辑的生图模型")
+    images=[{"b64":x["b64"],"media_type":image_part(x["b64"])["media_type"]} for x in input_images]
+    result=await image_lb.generate_image_with_images(prompt=prompt,images=images,aspect_ratio=aspect_ratio,image_size=image_size)
+    return validate_image_bytes(result)
 
 
 @router.post("/enhance")
@@ -105,7 +85,7 @@ async def enhance_image(
     from app.services.generation_service import _build_load_balancer
     image_lb = await _build_load_balancer(db, user.id, "image", key_id=image_key_id, model_name=image_model_name)
     chat_lb = await _build_load_balancer(db, user.id, "chat", key_id=chat_key_id, model_name=chat_model_name)
-    if not (image_lb or chat_lb):
+    if not image_lb:
         raise HTTPException(status_code=400, detail="没有可用的 API Key")
 
     image_b64 = base64.b64encode(content).decode()
@@ -190,7 +170,7 @@ async def style_transfer(
     from app.services.generation_service import _build_load_balancer
     image_lb = await _build_load_balancer(db, user.id, "image", key_id=image_key_id, model_name=image_model_name)
     chat_lb = await _build_load_balancer(db, user.id, "chat", key_id=chat_key_id, model_name=chat_model_name)
-    if not (image_lb or chat_lb):
+    if not image_lb:
         raise HTTPException(status_code=400, detail="没有可用的 API Key")
 
     source_b64 = base64.b64encode(source_bytes).decode()

@@ -1,6 +1,9 @@
 """File upload and reference image management API."""
 
 import os
+import io
+from PIL import Image
+from app.llm.image_validation import validate_image_bytes
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -29,12 +32,18 @@ async def upload_reference(
     if file.content_type not in ALLOWED_TYPES:
         raise HTTPException(status_code=400, detail=f"不支持的文件类型: {file.content_type}，仅支持 PNG/JPG/WebP")
 
-    content = await file.read()
+    content = await file.read(MAX_SIZE+1)
     if len(content) > MAX_SIZE:
         raise HTTPException(status_code=400, detail=f"文件太大，最大 {settings.MAX_UPLOAD_SIZE_MB}MB")
 
     # Save file
-    ext = file.filename.rsplit(".", 1)[-1] if "." in file.filename else "png"
+    try:
+        validate_image_bytes(content)
+        with Image.open(io.BytesIO(content)) as image:
+            ext={"PNG":"png","JPEG":"jpg","WEBP":"webp"}[image.format]
+            mime=Image.MIME[image.format]
+    except Exception as exc:
+        raise HTTPException(400,"上传文件不是有效 PNG/JPEG/WebP 图片") from exc
     filename = f"{uuid.uuid4().hex}.{ext}"
     rel_path = os.path.join("references", str(user.id), filename)
     abs_path = os.path.join(settings.UPLOAD_DIR, rel_path)
@@ -49,7 +58,7 @@ async def upload_reference(
         file_path=rel_path,
         file_name=file.filename,
         file_size=len(content),
-        mime_type=file.content_type,
+        mime_type=mime,
         expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
     )
     db.add(ref)

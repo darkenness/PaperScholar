@@ -9,6 +9,7 @@ from collections import defaultdict
 from typing import Optional
 
 from fastapi import Request, HTTPException, status
+from starlette.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.core.security import decode_access_token
@@ -82,10 +83,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 del _request_log[k]
 
         if len(_request_log[bucket_key]) >= max_requests:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"请求过于频繁，请在 {window} 秒后重试",
-            )
+            return JSONResponse({"detail":f"请求过于频繁，请在 {window} 秒后重试"},status_code=429,headers={"Retry-After":str(window)})
 
         _request_log[bucket_key].append(now)
         return await call_next(request)

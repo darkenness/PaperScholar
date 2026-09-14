@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import asyncio
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
@@ -40,6 +42,7 @@ class CostTracker:
     budget_usd: Optional[float] = None
     on_update: Optional[CostUpdateCallback] = None
     entries: list[CostEntry] = field(default_factory=list)
+    _reservations: dict = field(default_factory=dict)
 
     async def check_before_call(
         self,
@@ -49,11 +52,16 @@ class CostTracker:
         kwargs: dict[str, Any],
     ) -> None:
         projected = self._estimate_cost(provider, model, method, kwargs, result=None)[0]
-        if self.budget_usd is not None and self.total_usd + projected > self.budget_usd:
+        if self.budget_usd is not None and self.total_usd + sum(self._reservations.values()) + projected > self.budget_usd:
             raise BudgetExceededError(
                 f"预算上限 ${self.budget_usd:.4f} 已不足以继续调用模型，"
                 f"当前估算 ${self.total_usd:.4f}，下一次调用预计 ${projected:.4f}"
             )
+
+        self._reservations[id(asyncio.current_task())] = projected
+
+    def release_reservation(self):
+        self._reservations.pop(id(asyncio.current_task()),None)
 
     async def record_call(
         self,
@@ -78,9 +86,13 @@ class CostTracker:
             cost_usd=cost,
             pricing_known=pricing_known,
         )
+        self.release_reservation()
         self.entries.append(entry)
         if self.on_update:
-            await self.on_update(self.summary())
+            try:
+                await self.on_update(self.summary())
+            except Exception:
+                logging.getLogger(__name__).exception("Cost observer failed; preserving model output")
         return entry
 
     @property
@@ -104,7 +116,8 @@ class CostTracker:
             "total_usd": round(self.total_usd, 6),
             "budget_usd": self.budget_usd,
             "budget_exceeded": self.is_over_budget,
-            "pricing_complete": all(e.pricing_known for e in self.entries),
+            "pricing_complete": False,  # Estimates, not provider-verified billing.
+            "reserved_usd": round(sum(self._reservations.values()),6),
             "num_calls": len(self.entries),
             "input_tokens": sum(e.input_tokens for e in self.entries),
             "output_tokens": sum(e.output_tokens for e in self.entries),

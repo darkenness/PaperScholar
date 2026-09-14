@@ -6,6 +6,7 @@ import random
 from typing import Any, Callable, Dict, List, Optional
 
 from app.agents.base_agent import BaseAgent
+from app.services.cost_service import BudgetExceededError
 
 DIAGRAM_RETRIEVER_SYSTEM = """
 # Background & Goal
@@ -205,7 +206,13 @@ class RetrieverAgent(BaseAgent):
 
         await self.emit(on_event, "stage", {"name": "retriever", "status": "running", "progress": 0.05})
 
+        if data.get("retrieved_examples"):
+            data["top10_references"]=[item["id"] for item in data["retrieved_examples"]]
+            await self.emit(on_event,"stage",{"name":"retriever","status":"done","progress":.1,"detail":f"使用 {len(data['retrieved_examples'])} 张用户参考图"})
+            return data
         candidates = self._load_candidates(task_type)
+        if not candidates and retrieval_setting!="none":
+            await self.emit(on_event,"intermediate",{"type":"text","stage":"retriever","content":"参考库未安装或为空，本次使用原有风格指南；可上传自己的参考图。"})
 
         if retrieval_setting == "none" or not candidates:
             data["top10_references"] = []
@@ -292,7 +299,10 @@ class RetrieverAgent(BaseAgent):
             data["retrieved_examples"] = retrieved
             await self.emit(on_event, "intermediate", {"type": "text", "stage": "retriever", "content": f"Retrieved {len(retrieved)} references: {ref_ids[:5]}..."})
 
+        except BudgetExceededError:
+            raise
         except Exception as e:
+            await self.emit(on_event,"intermediate",{"type":"text","stage":"retriever","content":"自动检索失败，已回退随机参考；可手动上传参考图固定设计风格。"})
             print(f"[Retriever] LLM retrieval failed: {e}, falling back to random")
             sample_size = min(top_k, len(candidates))
             selected = random.sample(candidates, sample_size) if candidates else []

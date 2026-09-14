@@ -14,11 +14,13 @@ class GenerateRequest(BaseModel):
     num_candidates: int = Field(default=1, ge=1, le=20)
     aspect_ratio: Optional[str] = "1:1"
     image_size: Optional[str] = Field(default=None, description="指定 image 输出尺寸/质量，例如 1K、2K、4K、1536x1024")
-    max_critic_rounds: int = Field(default=1, ge=1, le=5)
+    max_critic_rounds: int = Field(default=1, ge=0, le=5)
     retriever_content_limit: Optional[int] = Field(default=None, description="Retriever候选内容截断长度，None=不截断（完整内容）")
     retriever_top_k: int = Field(default=3, ge=1, le=20, description="Retriever返回的参考示例数量")
     retriever_pool_size: Optional[int] = Field(default=None, description="Retriever候选池最大条数，None=使用默认值")
-    reference_image_ids: Optional[list[int]] = None
+    reference_image_ids: Optional[list[int]] = Field(default=None, max_length=10)
+    candidate_strategy: str = Field(default="samples",pattern="^(samples|layouts)$")
+    quality_guard: bool = True
     chat_model_name: Optional[str] = Field(default=None, description="指定 chat 模型名称")
     chat_key_id: Optional[int] = Field(default=None, description="指定 chat 供应商（API Key 配置 ID）")
     image_model_name: Optional[str] = Field(default=None, description="指定 image 模型名称")
@@ -31,6 +33,9 @@ class GenerateRequest(BaseModel):
 class ContinueGenerationRequest(BaseModel):
     result_id: Optional[int] = Field(default=None, description="指定要续跑的结果，不填则使用候选 0")
     feedback: str = Field(..., min_length=3, max_length=4000, description="用户反馈/修改要求")
+    preserve_layout: bool = True
+    quality_guard: bool = True
+    source_event_id: Optional[int] = None
     additional_critic_rounds: int = Field(default=1, ge=1, le=5)
     image_size: Optional[str] = None
     vector_export: str = Field(default="none", pattern="^(none|svg|pdf|both)$")
@@ -56,6 +61,7 @@ class TaskStatusResponse(BaseModel):
     cost_estimated_usd: Optional[float] = None
     cost_budget_usd: Optional[float] = None
     cost_details: Optional[dict] = None
+    request_params: Optional[dict] = None
 
     model_config = {"from_attributes": True}
 
@@ -93,6 +99,8 @@ class ModelProviderInfo(BaseModel):
     api_key_preview: str
     is_system: bool
     priority: int
+    display_name: Optional[str] = None
+    capability_status: dict = Field(default_factory=dict)
     size_mode: str = "quality"
     size_options: list[str] = Field(default_factory=list)
 

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { adminApi } from '@/lib/api';
+import ProviderManager from '@/components/ProviderManager';
 
 const providerOptionsFor = (type: 'chat' | 'image') => (
   type === 'image'
@@ -154,145 +155,7 @@ export default function AdminConfigPage() {
         </div>
       )}
 
-      {/* System API Keys */}
-      <div className="tech-panel p-5">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-bold text-[var(--text-primary)]">系统共享 API Key</h2>
-          <button
-            onClick={() => {
-              setShowKeyForm(true);
-              setKeyProvider(providerOptionsFor(keyModelType)[0].value);
-            }}
-            className="btn-primary text-xs py-1.5 px-4"
-          >
-            + 添加
-          </button>
-        </div>
-        <p className="text-xs text-[var(--text-muted)] mb-4">管理员配置的系统级 API Key，审核通过的用户在没有自己的 Key 时会自动使用这些</p>
-
-        {systemKeys.length === 0 ? (
-          <p className="text-[var(--text-muted)] text-sm py-4 text-center">暂未配置系统 API Key</p>
-        ) : (
-          <div className="divide-y divide-[var(--border-subtle)]">
-            {systemKeys.map((k: any) => (
-              <div key={k.id} className="py-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-xs font-mono px-1.5 py-0.5 bg-[var(--badge-bg)] text-[var(--text-secondary)]">{k.model_type}</span>
-                      <span className="text-sm font-medium text-[var(--text-primary)]">{k.provider}</span>
-                      {k.model_name && <span className="text-xs text-[var(--text-muted)]">· {k.model_name}</span>}
-                      <span className={`px-1.5 py-0.5 text-[10px] font-bold ${k.is_verified ? 'bg-green-500/20 text-green-400' : 'bg-yellow-500/20 text-yellow-400'}`}>
-                        {k.is_verified ? '已验证' : '未验证'}
-                      </span>
-                    </div>
-                    <div className="text-xs text-[var(--text-muted)] mt-0.5 font-mono">{k.api_key_preview}</div>
-                    {k.base_url && <div className="text-xs text-[var(--text-muted)] mt-0.5 font-mono truncate max-w-xs">{k.base_url}</div>}
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <button onClick={() => openEditSysKey(k)} className="btn-ghost text-xs py-1 px-2">编辑</button>
-                    <button onClick={() => handleVerifySystemKey(k.id)} disabled={verifyingSysId === k.id} className="btn-ghost text-xs py-1 px-2 disabled:opacity-50">
-                      {verifyingSysId === k.id ? '验证中...' : '验证'}
-                    </button>
-                    <button onClick={() => handleDeleteSystemKey(k.id)} className="text-xs text-red-400 hover:text-red-300 px-2 py-1">删除</button>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Add System Key Modal */}
-      {showKeyForm && (
-        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setShowKeyForm(false)}>
-          <div className="tech-panel p-6 w-full max-w-md space-y-4" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-lg font-bold text-[var(--text-primary)]">添加系统 API Key</h3>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-xs text-[var(--text-muted)] mb-1 block">模型类型</label>
-                <select
-                  value={keyModelType}
-                  onChange={(e) => {
-                    const nextType = e.target.value as 'chat' | 'image';
-                    setKeyModelType(nextType);
-                    setKeyProvider(providerOptionsFor(nextType)[0].value);
-                  }}
-                  className="w-full input-tech text-sm py-2"
-                >
-                  <option value="chat">Chat 模型</option>
-                  <option value="image">Image 模型</option>
-                </select>
-              </div>
-              <div>
-                <label className="text-xs text-[var(--text-muted)] mb-1 block">Provider</label>
-                <select value={keyProvider} onChange={(e) => setKeyProvider(e.target.value)} className="w-full input-tech text-sm py-2">
-                  {providerOptionsFor(keyModelType).map((opt) => (
-                    <option key={opt.value} value={opt.value}>{opt.label}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-            <div>
-              <label className="text-xs text-[var(--text-muted)] mb-1 block">Base URL (可选)</label>
-              <input
-                value={keyBaseUrl}
-                onChange={(e) => setKeyBaseUrl(e.target.value)}
-                placeholder={keyProvider === 'openai_images' ? 'https://api.vectorengine.cn/v1' : 'https://openrouter.ai/api/v1'}
-                className="w-full input-tech text-sm"
-              />
-            </div>
-            <div>
-              <label className="text-xs text-[var(--text-muted)] mb-1 block">API Key *</label>
-              <input value={keyApiKey} onChange={(e) => setKeyApiKey(e.target.value)} placeholder="sk-..." type="password" className="w-full input-tech text-sm" />
-            </div>
-            <div>
-              <label className="text-xs text-[var(--text-muted)] mb-1 block">模型名称 (可选)</label>
-              <input
-                value={keyModelName}
-                onChange={(e) => setKeyModelName(e.target.value)}
-                placeholder={keyProvider === 'openai_images' ? 'gpt-image-2-all' : 'gemini-2.5-pro'}
-                className="w-full input-tech text-sm"
-              />
-            </div>
-            <div className="flex gap-3 pt-2">
-              <button onClick={() => setShowKeyForm(false)} className="btn-ghost flex-1 py-2 text-sm">取消</button>
-              <button onClick={handleAddSystemKey} disabled={keySaving} className="btn-primary flex-1 py-2 text-sm disabled:opacity-50">{keySaving ? '保存中...' : '保存'}</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Edit System Key Modal */}
-      {editingSysKey && (
-        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setEditingSysKey(null)}>
-          <div className="tech-panel p-6 w-full max-w-md space-y-4" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-lg font-bold text-[var(--text-primary)]">
-              编辑系统 API Key
-              <span className="text-xs text-[var(--text-muted)] ml-2 font-normal">{editingSysKey.provider} · {editingSysKey.model_type}</span>
-            </h3>
-            <div className="text-xs text-[var(--text-muted)] font-mono bg-[var(--badge-bg)] px-3 py-2 rounded">
-              当前: {editingSysKey.api_key_preview}
-            </div>
-            <div>
-              <label className="text-xs text-[var(--text-muted)] mb-1 block">Base URL (OpenAI 兼容需含 /v1)</label>
-              <input value={editSysBaseUrl} onChange={(e) => setEditSysBaseUrl(e.target.value)} placeholder="留空使用默认" className="w-full input-tech text-sm" />
-            </div>
-            <div>
-              <label className="text-xs text-[var(--text-muted)] mb-1 block">新 API Key (留空则不修改)</label>
-              <input value={editSysApiKey} onChange={(e) => setEditSysApiKey(e.target.value)} placeholder="留空保持不变" type="password" className="w-full input-tech text-sm" />
-            </div>
-            <div>
-              <label className="text-xs text-[var(--text-muted)] mb-1 block">模型名称</label>
-              <input value={editSysModelName} onChange={(e) => setEditSysModelName(e.target.value)} placeholder="gemini-2.5-pro" className="w-full input-tech text-sm" />
-            </div>
-            <div className="flex gap-3 pt-2">
-              <button onClick={() => setEditingSysKey(null)} className="btn-ghost flex-1 py-2 text-sm">取消</button>
-              <button onClick={handleEditSysKey} disabled={editSysSaving} className="btn-primary flex-1 py-2 text-sm disabled:opacity-50">{editSysSaving ? '保存中...' : '保存修改'}</button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ProviderManager system />
 
       {/* System Configs */}
       <div className="tech-panel p-5">

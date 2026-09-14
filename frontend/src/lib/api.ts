@@ -86,14 +86,14 @@ export interface ModelProviderInfo {
   api_key_preview: string;
   is_system: boolean;
   priority: number;
-  size_mode?: 'quality' | 'fixed';
+  size_mode?: 'quality' | 'fixed' | 'custom';
   size_options?: string[];
 }
 
 export interface ModelGroupInfo {
   model_name: string;
   providers: ModelProviderInfo[];
-  size_mode?: 'quality' | 'fixed';
+  size_mode?: 'quality' | 'fixed' | 'custom';
   size_options?: string[];
 }
 
@@ -268,3 +268,36 @@ export const refineApi = {
     return res.json();
   },
 };
+
+export type Capability = 'chat' | 'vision' | 'image_generation' | 'image_edit';
+export interface CapabilityCheck {status: 'passed' | 'failed' | 'unknown'; checked_at?: string; latency_ms?: number; message?: string; error_code?: number;}
+export interface ProviderConfig {
+  id: number; model_type: 'chat' | 'image'; provider: string; base_url: string | null;
+  model_name: string | null; display_name?: string; api_key_preview: string;
+  api_options?: Record<string, unknown>; capability_status?: Record<string, CapabilityCheck>;
+  is_verified: boolean; is_enabled: boolean; last_error?: string; endpoints?: Record<string,string>;
+}
+export function providerApi(system=false) {
+  const root=`${API_V1}/${system?'admin/system-keys':'api-keys'}`;
+  return {
+    list: async ():Promise<ProviderConfig[]> => {const data=await request<any>(root);return system?data.items:[...data.chat_keys,...data.image_keys];},
+    save: (data:unknown,id?:number) => request<any>(id?`${root}/${id}`:root,{method:id?'PUT':'POST',body:JSON.stringify(data)}),
+    remove: (id:number) => request<any>(`${root}/${id}`,{method:'DELETE'}),
+    test: (id:number,capability:Capability) => request<any>(`${root}/${id}/verify?capability=${capability}`,{method:'POST'}),
+    models: (id:number) => request<{models:string[];message:string}>(`${root}/${id}/models`),
+    addModel: (id:number,data:unknown) => request<any>(`${root}/${id}/models`,{method:'POST',body:JSON.stringify(data)}),
+  };
+}
+export const referencesApi={upload:async(file:File)=>{
+  const body=new FormData();body.append('file',file);
+  const token=getToken(); const res=await fetch(`${API_V1}/references/upload`,{method:'POST',body,headers:token?{Authorization:`Bearer ${token}`}:{}});
+  const data=await res.json();if(!res.ok)throw new Error(data.detail||'参考图上传失败');
+  return data as {id:number;url:string;file_name:string};
+}};
+export const assetUrl=(url:string)=>url.startsWith('/')?`${API_BASE}${url}`:url;
+export async function downloadTaskZip(taskId:string) {
+  const token=getToken();const res=await fetch(generateApi.downloadZip(taskId),{headers:token?{Authorization:`Bearer ${token}`}:{}});
+  if(!res.ok){const data=await res.json().catch(()=>({}));throw new Error(data.detail||'下载失败');}
+  const url=URL.createObjectURL(await res.blob());const a=document.createElement('a');a.href=url;a.download=`paperscholar-${taskId.slice(0,8)}.zip`;a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}

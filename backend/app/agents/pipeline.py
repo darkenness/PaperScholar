@@ -11,6 +11,9 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from app.agents.base_agent import BaseAgent
+from app.agents.quality import image_part,layout_variant,choose_revision
+from app.llm.image_validation import validate_image_bytes
+from app.services.cost_service import BudgetExceededError
 from app.llm.load_balancer import LoadBalancer
 
 logger = logging.getLogger(__name__)
@@ -275,6 +278,8 @@ class InputOptimizerAgent(BaseAgent):
                 "stage": "input_optimizer",
                 "content": f"输入已优化：context {len(content)}→{len(data['content'])} chars, caption {len(caption)}→{len(data['visual_intent'])} chars",
             })
+        except BudgetExceededError:
+            raise
         except Exception as e:
             logger.warning("Input optimizer failed, using original input: %s", e)
             data["input_optimizer"] = {"optimized": False, "error": str(e)}
@@ -321,7 +326,7 @@ class PlannerAgent(BaseAgent):
                 # If example has a reference image, include it
                 ref_image_b64 = item.get("image_base64")
                 if ref_image_b64:
-                    contents.append({"type": "image_base64", "data": ref_image_b64, "media_type": "image/jpeg"})
+                    contents.append(image_part(ref_image_b64))
 
             await self.emit(on_event, "intermediate", {
                 "type": "text", "stage": "planner",
@@ -347,7 +352,7 @@ class PlannerAgent(BaseAgent):
 
         data["planner_description"] = description.strip()
 
-        await self.emit(on_event, "intermediate", {"type": "text", "stage": "planner", "content": description[:500]})
+        await self.emit(on_event, "intermediate", {"type": "text", "stage": "planner", "content": description})
         await self.emit(on_event, "stage", {"name": "planner", "status": "done", "progress": 0.3})
         return data
 
@@ -391,7 +396,7 @@ class StylistAgent(BaseAgent):
         refined = await self.chat_lb.chat(messages=messages, temperature=0.8)
         data["stylist_description"] = refined.strip()
 
-        await self.emit(on_event, "intermediate", {"type": "text", "stage": "stylist", "content": refined[:500]})
+        await self.emit(on_event, "intermediate", {"type": "text", "stage": "stylist", "content": refined})
         await self.emit(on_event, "stage", {"name": "stylist", "status": "done", "progress": 0.4})
         return data
 
@@ -521,7 +526,7 @@ class VisualizerAgent(BaseAgent):
                     data["vector_svg"] = artifacts["vector_svg"]
                 if artifacts.get("vector_pdf_base64"):
                     data["vector_pdf_base64"] = artifacts["vector_pdf_base64"]
-                await self.emit(on_event, "intermediate", {"type": "image_ready", "stage": "visualizer"})
+                await self.emit(on_event, "intermediate", {"type":"image_ready","stage":"visualizer","round":data.get("_render_round",0),"image_base64":data["image_base64"],"description":desc,"plot_code":data.get("plot_code")})
             else:
                 data["image_base64"] = None
                 logger.warning("Plot code execution failed")
@@ -535,36 +540,49 @@ class VisualizerAgent(BaseAgent):
             prompt += " Diagram: "
             image_bytes = None
 
-            # Primary: native image generation (Gemini image models)
-            try:
-                image_bytes = await self.image_lb.generate_image(
-                    prompt=prompt,
-                    aspect_ratio=aspect_ratio,
-                    image_size=data.get("image_size", "1k"),
-                    system_instruction=DIAGRAM_VISUALIZER_SYSTEM,
-                )
-            except Exception as e:
-                logger.warning(f"Visualizer generate_image failed: {e}")
-
-            # Fallback: generate image via chat (for OpenAI-compat or chat-based image models)
-            if not image_bytes:
+            if data.get("preserve_layout") and data.get("image_base64"):
+                part=image_part(data["image_base64"])
+                image_bytes=await self.image_lb.generate_image_with_images(prompt=prompt,images=[{"b64":part["data"],"media_type":part["media_type"]}],aspect_ratio=aspect_ratio,image_size=data.get("image_size"),system_instruction=DIAGRAM_VISUALIZER_SYSTEM)
+            else:
+                # Primary: native image generation (Gemini image models)
                 try:
-                    image_bytes = await self.image_lb.generate_image_from_chat(
-                        contents=[prompt],
+                    image_bytes = await self.image_lb.generate_image(
+                        prompt=prompt,
                         aspect_ratio=aspect_ratio,
                         image_size=data.get("image_size", "1k"),
+                        system_instruction=DIAGRAM_VISUALIZER_SYSTEM,
                     )
-                except (AttributeError, NotImplementedError):
-                    pass
-                except Exception as e:
-                    logger.warning(f"Visualizer generate_image_from_chat fallback failed: {e}")
+                except BudgetExceededError:
+                    raise
+                except (AttributeError, NotImplementedError) as e:
+                    logger.info("Native image operation is unsupported; trying chat image protocol: %s", e)
+                except Exception:
+                    # Authentication, endpoint, quota, and malformed-response errors
+                    # must remain visible; switching protocols can hide the selected
+                    # provider's real failure and produce an unexpected charge.
+                    raise
+
+                # Fallback: generate image via chat (for OpenAI-compat or chat-based image models)
+                if not image_bytes:
+                    try:
+                        image_bytes = await self.image_lb.generate_image_from_chat(
+                            contents=[prompt],
+                            aspect_ratio=aspect_ratio,
+                            image_size=data.get("image_size", "1k"),
+                        )
+                    except BudgetExceededError:
+                        raise
+                    except (AttributeError, NotImplementedError):
+                        pass
+                    except (AttributeError, NotImplementedError) as e:
+                        logger.info("Chat image protocol is unsupported: %s", e)
 
             if image_bytes:
-                # P2-3: Convert PNG to JPG for consistency
+                # Preserve original output bytes; only thumbnails may be compressed.
                 loop = asyncio.get_running_loop()
-                jpg_b64 = await loop.run_in_executor(None, _convert_png_to_jpg_b64, image_bytes)
+                jpg_b64 = base64.b64encode(image_bytes).decode()
                 data["image_base64"] = jpg_b64
-                await self.emit(on_event, "intermediate", {"type": "image_ready", "stage": "visualizer"})
+                await self.emit(on_event, "intermediate", {"type":"image_ready","stage":"visualizer","round":data.get("_render_round",0),"image_base64":data["image_base64"],"description":desc,"plot_code":data.get("plot_code")})
             else:
                 data["image_base64"] = None
                 logger.warning("Visualizer failed to generate image via all methods")
@@ -599,7 +617,7 @@ class CriticAgent(BaseAgent):
             prev_desc = data.get(f"critic_revised_desc_{round_idx - 1}")
             detailed_description = prev_desc if prev_desc else (data.get("stylist_description") or data.get("planner_description", ""))
 
-        content_raw = data.get("content", "")
+        content_raw = data.get("original_content") or data.get("content", "")
         if isinstance(content_raw, (dict, list)):
             import json
             content_raw = json.dumps(content_raw)
@@ -613,7 +631,7 @@ class CriticAgent(BaseAgent):
         contents: list[Any] = [critique_target]
 
         if image_b64 and len(image_b64) > 100:
-            contents.append({"type": "image_base64", "data": image_b64, "media_type": "image/png"})
+            contents.append(image_part(image_b64))
         else:
             contents.append("[SYSTEM NOTICE] The image could not be generated. Please check the description for errors and provide a revised version.")
 
@@ -630,15 +648,17 @@ class CriticAgent(BaseAgent):
 
         try:
             response = await self.chat_lb.chat_with_images(contents=contents, temperature=0.7, system_prompt=system_prompt)
+        except BudgetExceededError:
+            raise
         except Exception:
-            fallback_prompt = f"{critique_target}\n\nDetailed Description: {detailed_description}\n{content_labels[0]}: {content_raw}\n{content_labels[1]}: {caption}{feedback_block}\nYour Output:"
-            response = await self.chat_lb.chat(
-                messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": fallback_prompt}],
-                temperature=0.7,
-            )
+            data[f"critic_parse_failed_{round_idx}"]=True
+            data["critic_suggestions"]=""
+            await self.emit(on_event,"intermediate",{"type":"text","stage":"critic","round":round_idx,"content":"看图评审失败，保留当前版本；不会盲目重画。"})
+            await self.emit(on_event,"stage",{"name":"critic","status":"skipped","round":round_idx,"progress":critic_progress_end})
+            return data
 
         data[f"critic_feedback_{round_idx}"] = response
-        await self.emit(on_event, "intermediate", {"type": "text", "stage": "critic", "round": round_idx, "content": response[:500]})
+        await self.emit(on_event, "intermediate", {"type": "text", "stage": "critic", "round": round_idx, "content": response})
 
         # Parse response (like PaperBanana: clean markdown, use json_repair)
         import json_repair
@@ -653,8 +673,11 @@ class CriticAgent(BaseAgent):
             parsed = {}
             parse_failed = True
 
-        suggestions = parsed.get("critic_suggestions", "No changes needed.")
-        revised_description = parsed.get("revised_description", "No changes needed.")
+        suggestions = parsed.get("critic_suggestions", "")
+        revised_description = parsed.get("revised_description", "")
+        if not isinstance(suggestions,str) or not isinstance(revised_description,str) or not suggestions.strip() or not revised_description.strip():
+            parse_failed=True
+            suggestions,revised_description="",""
         if user_feedback and suggestions.strip() == "No changes needed." and revised_description.strip() == "No changes needed.":
             suggestions = f"Apply user feedback: {user_feedback}"
             revised_description = detailed_description + f"\n\nUser-requested revision to apply: {user_feedback}"
@@ -668,8 +691,8 @@ class CriticAgent(BaseAgent):
                 logger.warning(f"Critic round {round_idx}: JSON parse failed, using feedback fallback")
             else:
                 data[f"critic_parse_failed_{round_idx}"] = True
-                suggestions = "No changes needed."
-                revised_description = "No changes needed."
+                suggestions = "评审结果无效；保留当前版本。"
+                revised_description = detailed_description
                 logger.warning(f"Critic round {round_idx}: JSON parse failed, treating as no-op")
 
         data[f"critic_suggestions_{round_idx}"] = suggestions
@@ -722,12 +745,15 @@ class PipelineEngine:
         await self._emit(on_event, "stage", {"name": "pipeline", "status": "started", "mode": mode, "progress": 0.0})
 
         if mode == "continue_feedback":
-            data = await self._run_continue_feedback(data, max_critic_rounds, on_event)
+            data["candidate_index"]=0
+            data = await self._run_continue_feedback(data,max_critic_rounds,self._candidate_events(on_event,0,data))
             total = _time.monotonic() - pipeline_start
             logger.info(f"[Pipeline] Continue completed in {total:.1f}s")
             await self._emit(on_event, "stage", {"name": "pipeline", "status": "completed", "progress": 1.0})
             return data
 
+        data.setdefault("original_content",data.get("content",""))
+        data.setdefault("candidate_index",-1)
         if data.get("optimize_input"):
             t0 = _time.monotonic()
             data = await self.input_optimizer.process(data, on_event)
@@ -744,8 +770,11 @@ class PipelineEngine:
             data = await self._run_parallel_candidates(data, mode, max_critic_rounds, num_candidates, on_event)
         else:
             # Single candidate
-            data = await self._run_single(data, mode, max_critic_rounds, on_event)
+            data["candidate_index"]=0
+            data = await self._run_single(data,mode,max_critic_rounds,self._candidate_events(on_event,0,data))
 
+        if mode != "dev_retriever" and not data.get("image_base64") and not data.get("polished_image_base64"):
+            raise RuntimeError("所有候选均未返回有效图片，请检查供应商和接口能力")
         total = _time.monotonic() - pipeline_start
         logger.info(f"[Pipeline] Total pipeline completed in {total:.1f}s (mode={mode})")
         await self._emit(on_event, "stage", {"name": "pipeline", "status": "completed", "progress": 1.0})
@@ -798,8 +827,12 @@ class PipelineEngine:
                         image_size=data.get("image_size", "1k"),
                         system_instruction=system_prompt,
                     )
-                except Exception as e:
-                    logger.warning(f"Vanilla generate_image failed: {e}")
+                except BudgetExceededError:
+                    raise
+                except (AttributeError, NotImplementedError) as e:
+                    logger.info("Native image operation is unsupported; trying chat image protocol: %s", e)
+                except Exception:
+                    raise
 
                 # Fallback: generate image via chat
                 if not image_bytes:
@@ -809,10 +842,12 @@ class PipelineEngine:
                             aspect_ratio=data.get("aspect_ratio", "1:1"),
                             image_size=data.get("image_size", "1k"),
                         )
+                    except BudgetExceededError:
+                        raise
                     except (AttributeError, NotImplementedError):
                         pass
-                    except Exception as e:
-                        logger.warning(f"Vanilla generate_image_from_chat fallback failed: {e}")
+                    except (AttributeError, NotImplementedError) as e:
+                        logger.info("Chat image protocol is unsupported: %s", e)
 
                 if image_bytes:
                     data["image_base64"] = base64.b64encode(image_bytes).decode()
@@ -836,6 +871,8 @@ class PipelineEngine:
                     if artifacts.get("vector_pdf_base64"):
                         data["vector_pdf_base64"] = artifacts["vector_pdf_base64"]
 
+            if data.get("image_base64"):
+                await self._emit(on_event,"intermediate",{"type":"image_ready","stage":"visualizer","round":0,"image_base64":data["image_base64"],"description":prompt_text,"plot_code":data.get("plot_code")})
             await self._emit(on_event, "stage", {"name": "visualizer", "status": "done", "progress": 0.6})
         elif mode == "dev_polish":
             # P1-5: dev_polish mode — directly polish an existing image
@@ -880,68 +917,62 @@ class PipelineEngine:
             raise ValueError(f"Unknown pipeline mode: {mode}")
         return data
 
-    async def _run_parallel_candidates(
-        self,
-        data: Dict[str, Any],
-        mode: str,
-        max_critic_rounds: int,
-        num_candidates: int,
-        on_event: Optional[Callable],
-    ) -> Dict[str, Any]:
-        """Run pipeline for multiple candidates in parallel (like PaperBanana's batch processing)."""
-        await self._emit(on_event, "intermediate", {
-            "type": "text", "stage": "pipeline",
-            "content": f"Generating {num_candidates} candidates in parallel...",
-        })
+    def _candidate_events(self, callback, index, data):
+        async def emit(kind,payload):
+            scoped=dict(payload)
+            scoped["candidate_index"]=index
+            if scoped.get("name",scoped.get("stage"))=="visualizer":
+                scoped.setdefault("round",data.get("_render_round",0))
+            await self._emit(callback,kind,scoped)
+        return emit
 
-        # First run shared steps: retriever is already done, run planner once
-        data = await self.planner.process(data, on_event)
-        if mode in ("dev_planner_stylist", "dev_full", "demo_full"):
-            data = await self.stylist.process(data, on_event)
-
-        # Now fork: run visualizer + critic for each candidate in parallel
-        async def generate_one(candidate_idx: int) -> Dict[str, Any]:
-            cdata = {**data, "candidate_index": candidate_idx}
-            cdata = await self.visualizer.process(cdata, on_event)
-            if mode in ("dev_planner_critic", "demo_planner_critic"):
-                cdata = await self._run_critic_loop(cdata, max_critic_rounds, on_event, source="planner")
-            elif mode in ("dev_full", "demo_full"):
-                cdata = await self._run_critic_loop(cdata, max_critic_rounds, on_event, source="stylist")
-            if mode == "dev_full":
-                cdata = await self.polish.process(cdata, on_event)
-            return cdata
-
-        sem = asyncio.Semaphore(min(num_candidates, 10))
-
-        async def limited(idx: int) -> Dict[str, Any]:
+    async def _run_parallel_candidates(self,data,mode,max_critic_rounds,num_candidates,on_event):
+        import copy
+        planned={"dev_planner","dev_planner_stylist","dev_planner_critic","demo_planner_critic","dev_full","demo_full"}
+        if mode in planned:
+            data=await self.planner.process(data,on_event)
+            if mode in {"dev_planner_stylist","dev_full","demo_full"}:
+                data=await self.stylist.process(data,on_event)
+        sem=asyncio.Semaphore(min(num_candidates,8))
+        async def generate_one(index):
             async with sem:
-                return await generate_one(idx)
-
-        results = await asyncio.gather(*[limited(i) for i in range(num_candidates)], return_exceptions=True)
-
-        # Collect results
-        candidates = []
-        for i, r in enumerate(results):
-            if isinstance(r, Exception):
-                logger.error(f"Candidate {i} failed: {r}")
-                continue
-            candidates.append(r)
-
-        data["candidates"] = candidates
-        data["num_candidates_completed"] = len(candidates)
-
-        # Use the first successful candidate as the primary result
-        if candidates:
-            primary = candidates[0]
-            data["image_base64"] = primary.get("image_base64") or primary.get("polished_image_base64")
-            data["planner_description"] = primary.get("planner_description", data.get("planner_description"))
-            data["stylist_description"] = primary.get("stylist_description", data.get("stylist_description"))
-
-        await self._emit(on_event, "intermediate", {
-            "type": "text", "stage": "pipeline",
-            "content": f"Completed {len(candidates)}/{num_candidates} candidates",
-        })
-
+                branch=copy.deepcopy(data)
+                branch["candidate_index"]=index
+                emit=self._candidate_events(on_event,index,branch)
+                if mode not in planned:
+                    return await self._run_single(branch,mode,max_critic_rounds,emit)
+                if index>0 and data.get("candidate_strategy")=="layouts" and data.get("task_type")=="diagram":
+                    desc=branch.get("stylist_description") or branch.get("planner_description","")
+                    try:
+                        branch["stylist_description"]=await layout_variant(self.planner.chat_lb,desc,data["content"],index)
+                        await emit("intermediate",{"type":"text","stage":"layout_variant","content":branch["stylist_description"]})
+                    except BudgetExceededError:
+                        raise
+                    except Exception:
+                        await emit("intermediate",{"type":"text","stage":"layout_variant","content":"构图探索失败，保留原规划。"})
+                branch=await self.visualizer.process(branch,emit)
+                if mode in {"dev_planner_critic","demo_planner_critic","dev_full","demo_full"}:
+                    branch=await self._run_critic_loop(branch,max_critic_rounds,emit,source="planner" if mode in {"dev_planner_critic","demo_planner_critic"} else "stylist")
+                if mode=="dev_full":
+                    branch=await self.polish.process(branch,emit)
+                return branch
+        outputs=await asyncio.gather(*(generate_one(i) for i in range(num_candidates)),return_exceptions=True)
+        candidates,failures=[],[]
+        for index,out in enumerate(outputs):
+            if isinstance(out,BaseException):
+                if isinstance(out,asyncio.CancelledError):
+                    raise out
+                failures.append({"candidate_index":index,"message":str(out)})
+                await self._emit(on_event,"candidate_failed",failures[-1])
+            elif out.get("image_base64") or out.get("polished_image_base64") or mode=="dev_retriever":
+                candidates.append(out)
+            else:
+                failures.append({"candidate_index":index,"message":"未返回有效图片"})
+        if not candidates:
+            raise RuntimeError("所有候选生成失败，请检查模型和供应商配置")
+        data["candidates"]=candidates;data["candidate_failures"]=failures
+        data["num_candidates_completed"]=len(candidates)
+        data["image_base64"]=candidates[0].get("polished_image_base64") or candidates[0].get("image_base64")
         return data
 
     async def _run_critic_loop(self, data: Dict[str, Any], max_rounds: int, on_event: Optional[Callable], source: str = "stylist") -> Dict[str, Any]:
@@ -949,6 +980,7 @@ class PipelineEngine:
         Tracks current_best_image and rolls back on visualization failure."""
         # Track the best image so far for rollback
         current_best_image = data.get("image_base64")
+        accepted_description=data.get("stylist_description") or data.get("planner_description","")
 
         # Early exit: if no image was generated at all, skip critic loop entirely
         if not current_best_image or len(str(current_best_image)) < 100:
@@ -981,30 +1013,38 @@ class PipelineEngine:
                 logger.info(f"Critic round {i}: no changes needed, stopping")
                 break
 
-            # Early exit: if suggestions are very short, likely minor — skip re-generation
-            if len(suggestions) < 50 and i > 0:
-                logger.info(f"Critic round {i}: minor suggestions ({len(suggestions)} chars), stopping early")
-                break
-
-            # S5 fix: if JSON parse failed, skip visualizer (would waste a round)
             if data.get(f"critic_parse_failed_{i}"):
-                logger.info(f"Critic round {i}: parse failed, skipping visualizer")
-                continue
+                logger.warning("Invalid critique; preserve image without declaring a pass")
+                break
 
             # Re-generate image with revised description (pass dynamic progress hints)
             data["_vis_progress_start"] = round(round_mid, 3)
             data["_vis_progress_end"] = round(round_end, 3)
+            previous_artifacts={key:data.get(key) for key in ("plot_code","vector_svg","vector_pdf_base64")}
+            data["_render_round"]=i+1
             data = await self.visualizer.process(data, on_event)
 
             # P0-4: Rollback mechanism — if visualizer failed, restore previous best
             new_image = data.get("image_base64")
             if new_image and len(str(new_image)) > 100:
+                accept,reason=True,"最新有效版本"
+                if data.get("quality_guard",True) and data.get("task_type","diagram")=="diagram":
+                    accept,reason=await choose_revision(self.critic.chat_lb,current_best_image,new_image,data)
+                await self._emit(on_event,"selection",{"stage":"revision_selector","round":i+1,"accepted":accept,"reason":reason})
+                if not accept:
+                    data["image_base64"]=current_best_image
+                    data["stylist_description"]=accepted_description
+                    data.update(previous_artifacts)
+                    break
                 current_best_image = new_image
+                accepted_description=data.get("stylist_description") or data.get("planner_description","")
                 logger.info(f"Critic round {i}: visualization SUCCESS, updated best image")
             else:
                 # Rollback to previous best image
                 if current_best_image:
                     data["image_base64"] = current_best_image
+                    data["stylist_description"] = accepted_description
+                    data.update(previous_artifacts)
                     logger.warning(f"Critic round {i}: visualization FAILED, rolled back to previous best")
                     await self._emit(on_event, "intermediate", {
                         "type": "text", "stage": "critic",

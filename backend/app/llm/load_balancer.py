@@ -1,11 +1,13 @@
 import asyncio
+import hashlib
 import logging
 import random
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional, TYPE_CHECKING
 
 from app.llm.base_client import BaseLLMClient
+from app.llm.image_validation import InvalidModelOutputError, validate_image_bytes
 from app.llm.client_factory import LLMClientFactory
 from app.services.cost_service import BudgetExceededError, CostTracker
 
@@ -28,6 +30,7 @@ class ClientConfig:
     model: str = ""
     priority: int = 0
     api_key_id: Optional[int] = None  # DB id for usage logging
+    api_options: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -51,7 +54,9 @@ class LoadBalancer:
         key_pool_manager: Optional["KeyPoolManager"] = None,
         start_index: int = 0,
         max_queue_wait_seconds: float = 300.0,
+        before_call=None,
     ):
+        self._before_call = before_call
         self._usage_callback = usage_callback  # async fn(provider, model, api_key_id, success, error_msg, latency_ms)
         self._wait_callback = wait_callback
         self._cost_tracker = cost_tracker
@@ -68,6 +73,7 @@ class LoadBalancer:
                 api_key=cfg.api_key,
                 base_url=cfg.base_url,
                 model=cfg.model,
+                api_options=cfg.api_options,
             )
             self._states.append(ClientState(client=client, config=cfg))
 
@@ -88,9 +94,8 @@ class LoadBalancer:
         return None
 
     def _key_identity(self, state: ClientState) -> str:
-        if state.config.api_key_id is not None:
-            return f"id:{state.config.api_key_id}"
-        return f"{state.config.provider}:{state.config.base_url}:{state.config.model}"
+        fingerprint = hashlib.sha256(state.config.api_key.encode("utf-8")).hexdigest()
+        return f"{(state.config.base_url or state.config.provider).rstrip('/')}:{fingerprint}"
 
     def _is_state_available(self, state: ClientState, now: float) -> bool:
         if state.is_disabled:
@@ -99,7 +104,7 @@ class LoadBalancer:
         cooldown_until = max(state.cooldown_until, _GLOBAL_KEY_COOLDOWNS.get(key, 0.0))
         if cooldown_until > now:
             return False
-        return _GLOBAL_KEY_IN_FLIGHT.get(key, 0) < _MAX_IN_FLIGHT_PER_KEY
+        return _GLOBAL_KEY_IN_FLIGHT.get(key, 0) < state.config.api_options.get("max_concurrency",_MAX_IN_FLIGHT_PER_KEY)
 
     def _next_availability_delay(self) -> Optional[float]:
         now = time.monotonic()
@@ -112,11 +117,11 @@ class LoadBalancer:
             cooldown_until = max(state.cooldown_until, _GLOBAL_KEY_COOLDOWNS.get(key, 0.0))
             if cooldown_until > now:
                 delays.append(cooldown_until - now)
-            elif _GLOBAL_KEY_IN_FLIGHT.get(key, 0) >= _MAX_IN_FLIGHT_PER_KEY:
+            elif _GLOBAL_KEY_IN_FLIGHT.get(key, 0) >= state.config.api_options.get("max_concurrency",_MAX_IN_FLIGHT_PER_KEY):
                 has_busy_key = True
-        if not delays:
-            return 1.0 if has_busy_key else None
-        return max(0.0, min(delays))
+        if has_busy_key:
+            delays.append(1.0)
+        return max(0.0, min(delays)) if delays else None
 
     async def _acquire_state(self) -> Optional[ClientState]:
         async with _GLOBAL_POOL_LOCK:
@@ -165,7 +170,10 @@ class LoadBalancer:
     @staticmethod
     def _status_code(error: Exception) -> Optional[int]:
         response = getattr(error, "response", None)
-        return getattr(response, "status_code", None)
+        for value in (getattr(response, "status_code", None), getattr(error, "status_code", None), getattr(error, "code", None)):
+            if isinstance(value, int) and 100 <= value <= 599:
+                return value
+        return None
 
     @staticmethod
     def _retry_after_seconds(error: Exception) -> Optional[float]:
@@ -216,6 +224,8 @@ class LoadBalancer:
         busy_wait_started: Optional[float] = None
         round_index = 1
         while round_index <= max_rounds:
+            if self._before_call:
+                await self._before_call()
             attempted_this_round = 0
             for _ in range(len(self._states)):
                 state = await self._acquire_state()
@@ -227,6 +237,8 @@ class LoadBalancer:
                 tried += 1
                 call_started = time.monotonic()
                 try:
+                    if self._before_call:
+                        await self._before_call()
                     if self._cost_tracker:
                         await self._cost_tracker.check_before_call(
                             state.config.provider,
@@ -235,6 +247,10 @@ class LoadBalancer:
                             kwargs,
                         )
                     result = await getattr(state.client, method)(**kwargs)
+                    if method in {"generate_image", "generate_image_with_images", "generate_image_from_chat"}:
+                        await asyncio.to_thread(validate_image_bytes, result)
+                    elif method in {"chat", "chat_with_images"} and (not isinstance(result, str) or not result.strip()):
+                        raise InvalidModelOutputError("Text provider returned no usable text")
                     latency_ms = int((time.monotonic() - call_started) * 1000)
                     usage_entry = None
                     if self._cost_tracker:
@@ -247,7 +263,7 @@ class LoadBalancer:
                             api_key_id=state.config.api_key_id,
                         )
                     if self._usage_callback:
-                        await self._usage_callback(
+                        await self._safe_callback(self._usage_callback,
                             provider=state.config.provider,
                             model=state.config.model,
                             api_key_id=state.config.api_key_id,
@@ -263,7 +279,7 @@ class LoadBalancer:
                         )
                     # Record success in key pool manager
                     if self._key_pool_manager and state.config.api_key_id:
-                        await self._key_pool_manager.record_call(
+                        await self._safe_callback(self._key_pool_manager.record_call,
                             key_id=state.config.api_key_id,
                             success=True,
                             latency_ms=latency_ms,
@@ -289,7 +305,7 @@ class LoadBalancer:
                     last_error = e
                     latency_ms = int((time.monotonic() - call_started) * 1000)
                     if self._usage_callback:
-                        await self._usage_callback(
+                        await self._safe_callback(self._usage_callback,
                             provider=state.config.provider,
                             model=state.config.model,
                             api_key_id=state.config.api_key_id,
@@ -307,7 +323,7 @@ class LoadBalancer:
                         # Record failure in key pool manager
                         error_type = "429" if self._status_code(e) == 429 else "other"
                         if self._key_pool_manager and state.config.api_key_id:
-                            await self._key_pool_manager.record_call(
+                            await self._safe_callback(self._key_pool_manager.record_call,
                                 key_id=state.config.api_key_id,
                                 success=False,
                                 latency_ms=latency_ms,
@@ -337,6 +353,8 @@ class LoadBalancer:
                             e,
                         )
                 finally:
+                    if self._cost_tracker and hasattr(self._cost_tracker,"release_reservation"):
+                        self._cost_tracker.release_reservation()
                     await self._release_state(state)
 
             if attempted_this_round == 0:
@@ -375,6 +393,13 @@ class LoadBalancer:
         raise RuntimeError(
             f"All {tried} LLM clients failed. Last error: {last_error}"
         )
+
+    @staticmethod
+    async def _safe_callback(callback, **kwargs):
+        try:
+            await callback(**kwargs)
+        except Exception:
+            logger.exception("Observer failed; model request will not be issued again")
 
     async def chat(self, messages: list[dict], **kwargs) -> str:
         return await self.call("chat", messages=messages, **kwargs)

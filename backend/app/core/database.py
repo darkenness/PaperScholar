@@ -33,3 +33,5 @@ async def get_db() -> AsyncSession:
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        from app.core.maintenance_schema import ensure_maintenance_columns
+        await conn.run_sync(ensure_maintenance_columns)

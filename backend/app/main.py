@@ -18,7 +18,7 @@ async def lifespan(app: FastAPI):
         print(f"[PaperScholar] Database initialized successfully")
     except Exception as e:
         print(f"[PaperScholar] WARNING: Database init failed: {e}")
-        print(f"[PaperScholar] Server will start but DB features won't work until DB is available")
+        raise RuntimeError("Database initialization failed; check migration/connectivity before serving") from e
 
     # Start background cleanup task
     import asyncio
@@ -29,6 +29,9 @@ async def lifespan(app: FastAPI):
     yield
     # Shutdown
     cleanup_task.cancel()
+    await asyncio.gather(cleanup_task,return_exceptions=True)
+    from app.services.task_control import shutdown_tasks
+    await shutdown_tasks()
     print("[PaperScholar] Server shutting down")
 
 
