@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 class ApiKeyCreate(BaseModel):
     model_type: str = Field(..., pattern="^(chat|image)$")
-    provider: str = Field(..., pattern="^(openai_compat|gemini|anthropic)$")
+    provider: str = Field(..., pattern="^(openai_compat|openai_images|gemini|anthropic)$")
     base_url: Optional[str] = None
     api_key: str = Field(..., min_length=10)
     model_name: Optional[str] = None

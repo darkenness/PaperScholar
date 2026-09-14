@@ -45,12 +45,7 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
 
 // Auth
 export const authApi = {
-  sendCode: (email: string) =>
-    request<{ message: string }>(`${API_V1}/auth/send-code`, {
-      method: 'POST',
-      body: JSON.stringify({ email }),
-    }),
-  register: (data: { username: string; email: string; password: string; verification_code?: string }) =>
+  register: (data: { username: string; email: string; password: string; invite_code: string }) =>
     request<{ user: any; access_token: string }>(`${API_V1}/auth/register`, {
       method: 'POST',
       body: JSON.stringify(data),
@@ -91,11 +86,15 @@ export interface ModelProviderInfo {
   api_key_preview: string;
   is_system: boolean;
   priority: number;
+  size_mode?: 'quality' | 'fixed';
+  size_options?: string[];
 }
 
 export interface ModelGroupInfo {
   model_name: string;
   providers: ModelProviderInfo[];
+  size_mode?: 'quality' | 'fixed';
+  size_options?: string[];
 }
 
 export interface AvailableModelsResponse {
@@ -120,6 +119,11 @@ export const generateApi = {
   },
   cancel: (taskId: string) =>
     request<any>(`${API_V1}/generate/${taskId}/cancel`, { method: 'POST' }),
+  continueTask: (taskId: string, data: any) =>
+    request<{ task_id: string; status: string; stream_url: string }>(`${API_V1}/generate/${taskId}/continue`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
   deleteTask: (taskId: string) =>
     request<any>(`${API_V1}/generate/${taskId}`, { method: 'DELETE' }),
   toggleFavorite: (resultId: number, isFavorited: boolean) =>
@@ -155,24 +159,12 @@ export const adminApi = {
     request<any>(`${API_V1}/admin/announcements/${id}`, { method: 'DELETE' }),
   // System API Keys
   getSystemKeys: () => request<any>(`${API_V1}/admin/system-keys`),
-  addSystemKey: (data: { model_type: string; provider: string; api_key: string; base_url?: string; model_name?: string }) => {
-    const params = new URLSearchParams();
-    params.set('model_type', data.model_type);
-    params.set('provider', data.provider);
-    params.set('api_key', data.api_key);
-    if (data.base_url) params.set('base_url', data.base_url);
-    if (data.model_name) params.set('model_name', data.model_name);
-    return request<any>(`${API_V1}/admin/system-keys?${params.toString()}`, { method: 'POST' });
-  },
+  addSystemKey: (data: { model_type: string; provider: string; api_key: string; base_url?: string; model_name?: string }) =>
+    request<any>(`${API_V1}/admin/system-keys`, { method: 'POST', body: JSON.stringify(data) }),
   verifySystemKey: (id: number) =>
     request<any>(`${API_V1}/admin/system-keys/${id}/verify`, { method: 'POST' }),
-  updateSystemKey: (id: number, data: { base_url?: string; api_key?: string; model_name?: string }) => {
-    const params = new URLSearchParams();
-    if (data.base_url !== undefined) params.set('base_url', data.base_url);
-    if (data.api_key !== undefined) params.set('api_key', data.api_key);
-    if (data.model_name !== undefined) params.set('model_name', data.model_name);
-    return request<any>(`${API_V1}/admin/system-keys/${id}?${params.toString()}`, { method: 'PUT' });
-  },
+  updateSystemKey: (id: number, data: { base_url?: string; api_key?: string; model_name?: string }) =>
+    request<any>(`${API_V1}/admin/system-keys/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteSystemKey: (id: number) =>
     request<any>(`${API_V1}/admin/system-keys/${id}`, { method: 'DELETE' }),
 };
@@ -181,4 +173,98 @@ export const adminApi = {
 export const publicApi = {
   announcements: () => request<any>(`${API_V1}/announcements/active`),
   health: () => request<any>(`${API_BASE}/api/health`),
+};
+
+// ===================== Edit / Vectorization =====================
+export const editApi = {
+  // Main vectorization
+  vectorize: async (formData: FormData) => {
+    const token = getToken();
+    const res = await fetch(`${API_V1}/edit`, {
+      method: 'POST',
+      body: formData,
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: '请求失败' }));
+      throw new Error(err.detail || '矢量化失败');
+    }
+    return res.json();
+  },
+
+  // Generate SVG from description (AutoFigure style)
+  generateSvg: async (formData: FormData) => {
+    const token = getToken();
+    const res = await fetch(`${API_V1}/edit/svg-generate`, {
+      method: 'POST',
+      body: formData,
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: '请求失败' }));
+      throw new Error(err.detail || 'SVG 生成失败');
+    }
+    return res.json();
+  },
+
+  // Extract methodology from paper (PDF/MD/TXT)
+  extractMethodology: async (formData: FormData) => {
+    const token = getToken();
+    const res = await fetch(`${API_V1}/edit/extract-methodology`, {
+      method: 'POST',
+      body: formData,
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: '请求失败' }));
+      throw new Error(err.detail || '方法论提取失败');
+    }
+    return res.json();
+  },
+
+  // Assemble final SVG from vectorized result
+  assemble: async (formData: FormData) => {
+    const token = getToken();
+    const res = await fetch(`${API_V1}/edit/assemble`, {
+      method: 'POST',
+      body: formData,
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: '请求失败' }));
+      throw new Error(err.detail || 'SVG 组装失败');
+    }
+    return res.json();
+  },
+};
+
+// ===================== Refine / Enhancement =====================
+export const refineApi = {
+  enhance: async (formData: FormData) => {
+    const token = getToken();
+    const res = await fetch(`${API_V1}/refine/enhance`, {
+      method: 'POST',
+      body: formData,
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: '请求失败' }));
+      throw new Error(err.detail || '图像增强失败');
+    }
+    return res.json();
+  },
+
+  styleTransfer: async (formData: FormData) => {
+    const token = getToken();
+    const res = await fetch(`${API_V1}/refine/style-transfer`, {
+      method: 'POST',
+      body: formData,
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: '请求失败' }));
+      throw new Error(err.detail || '风格迁移失败');
+    }
+    return res.json();
+  },
 };

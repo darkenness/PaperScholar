@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { toast } from 'sonner';
+import { editApi } from '@/lib/api';
 import ModelSelector, { type ModelSelection } from '@/components/ModelSelector';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
@@ -63,12 +64,7 @@ export default function EditPage() {
     if (modelSel.chatKeyId) formData.append('chat_key_id', String(modelSel.chatKeyId));
 
     try {
-      const res = await fetch(`${API_BASE}/api/v1/edit/assemble`, {
-        method: 'POST', body: formData,
-        headers: { 'Authorization': `Bearer ${token}` },
-      });
-      if (!res.ok) { const err = await res.json(); throw new Error(err.detail || '组装失败'); }
-      const data = await res.json();
+      const data = await editApi.assemble(formData);
       setFinalSvg(data);
       toast.success('SVG 最终组装完成');
     } catch (e: any) {
@@ -90,12 +86,7 @@ export default function EditPage() {
     if (modelSel.chatKeyId) formData.append('chat_key_id', String(modelSel.chatKeyId));
 
     try {
-      const res = await fetch(`${API_BASE}/api/v1/edit`, {
-        method: 'POST', body: formData,
-        headers: { 'Authorization': `Bearer ${token}` },
-      });
-      if (!res.ok) { const err = await res.json(); throw new Error(err.detail || '请求失败'); }
-      const data = await res.json();
+      const data = await editApi.vectorize(formData);
       setResult(data);
       toast.success(`矢量化完成，检测到 ${data.icon_count} 个图标区域`);
     } catch (e: any) {
@@ -115,12 +106,7 @@ export default function EditPage() {
     if (modelSel.chatKeyId) formData.append('chat_key_id', String(modelSel.chatKeyId));
 
     try {
-      const res = await fetch(`${API_BASE}/api/v1/edit/svg-generate`, {
-        method: 'POST', body: formData,
-        headers: { 'Authorization': `Bearer ${token}` },
-      });
-      if (!res.ok) { const err = await res.json(); throw new Error(err.detail || '请求失败'); }
-      const data = await res.json();
+      const data = await editApi.generateSvg(formData);
       setSvgResult(data);
       toast.success(`SVG 生成完成，评分 ${data.final_score?.toFixed(1)}/10`);
     } catch (e: any) {

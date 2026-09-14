@@ -4,17 +4,41 @@ from typing import Any, Optional
 import httpx
 
 from app.llm.base_client import BaseLLMClient
+from app.llm.provider_capabilities import (
+    build_image_config,
+    resolve_openai_image_size,
+    should_use_openai_images_api,
+)
 
 
 class OpenAICompatClient(BaseLLMClient):
-    """OpenAI-compatible API client (OpenRouter, Bianxie, custom endpoints)."""
+    """OpenAI-compatible API client.
 
-    def __init__(self, api_key: str, base_url: str = "https://openrouter.ai/api/v1", model: str = "gemini-2.5-pro", **kwargs):
+    Image generation supports two explicitly configurable modes:
+    - ``image_api_mode='chat'`` for OpenRouter and chat-completions relays that
+      return image data via ``message.images`` or content parts.
+    - ``image_api_mode='images'`` for OpenAI Images API compatible endpoints such
+      as GPT Image and compatible third-party relays.
+
+    ``base_url`` and ``model`` are intentionally passed through unchanged so the
+    admin UI can freely configure third-party relay URLs and model names.
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str = "https://openrouter.ai/api/v1",
+        model: str = "gemini-2.5-pro",
+        image_api_mode: Optional[str] = None,
+        **kwargs,
+    ):
         super().__init__(api_key=api_key, base_url=base_url, model=model, **kwargs)
+        self.image_api_mode = image_api_mode
 
     def _headers(self) -> dict:
         return {
             "Authorization": f"Bearer {self.api_key}",
+            "Accept": "application/json",
             "Content-Type": "application/json",
         }
 
@@ -38,26 +62,10 @@ class OpenAICompatClient(BaseLLMClient):
             return data["choices"][0]["message"]["content"]
 
     async def chat_with_images(self, contents: list[Any], temperature: float = 0.7, max_tokens: Optional[int] = None, system_prompt: Optional[str] = None, **kwargs) -> str:
-        message_content = []
-        for item in contents:
-            if isinstance(item, str):
-                message_content.append({"type": "text", "text": item})
-            elif isinstance(item, dict) and item.get("type") == "image_base64":
-                message_content.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{item.get('media_type', 'image/png')};base64,{item['data']}"},
-                })
-            elif isinstance(item, bytes):
-                b64 = base64.b64encode(item).decode()
-                message_content.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/png;base64,{b64}"},
-                })
-
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": message_content})
+        messages.append({"role": "user", "content": self._build_chat_content(contents)})
 
         payload = {
             "model": self.model,
@@ -78,39 +86,22 @@ class OpenAICompatClient(BaseLLMClient):
             return data["choices"][0]["message"]["content"]
 
     async def generate_image(self, prompt: str, **kwargs) -> Optional[bytes]:
-        """Generate image via /chat/completions (GPT-4o style).
-
-        The model returns image data inline in the chat response as
-        base64-encoded data URIs within image_url content parts.
-        """
-        system_instruction = kwargs.get("system_instruction")
-        messages: list[dict] = []
-        if system_instruction:
-            messages.append({"role": "system", "content": system_instruction})
-        messages.append({"role": "user", "content": prompt})
-
-        payload: dict[str, Any] = {
-            "model": kwargs.get("image_model", self.model),
-            "messages": messages,
-        }
-
-        async with httpx.AsyncClient(timeout=180) as client:
-            resp = await client.post(
-                f"{self.base_url}/chat/completions",
-                headers=self._headers(),
-                json=payload,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return self._extract_image_from_response(data)
+        image_model = kwargs.get("image_model") or self.model
+        mode = kwargs.get("image_api_mode") or self.image_api_mode
+        image_kwargs = dict(kwargs)
+        image_kwargs.pop("image_model", None)
+        image_kwargs.pop("image_api_mode", None)
+        if should_use_openai_images_api(self.base_url, image_model, mode):
+            return await self._generate_image_via_images_api(prompt, image_model, **image_kwargs)
+        return await self._generate_image_via_chat(prompt, image_model, **image_kwargs)
 
     async def generate_image_with_images(self, prompt: str, images: list[dict], **kwargs) -> Optional[bytes]:
-        """Image-to-image generation via /chat/completions (GPT-4o style).
+        """Image-to-image generation via chat completions.
 
-        Sends the original image(s) + prompt, and extracts generated image
-        from the response.
+        OpenRouter/Nano Banana-style relays usually expose image editing through
+        chat-completions with multimodal input. Native OpenAI image editing is
+        intentionally not overloaded here because relay support varies.
         """
-        # Build multimodal user content: text + input images
         user_content: list[dict] = [{"type": "text", "text": prompt}]
         for img in images:
             b64 = img.get("b64", "")
@@ -120,12 +111,12 @@ class OpenAICompatClient(BaseLLMClient):
                 "image_url": {"url": f"data:{media_type};base64,{b64}"},
             })
 
-        messages: list[dict] = [{"role": "user", "content": user_content}]
-
-        payload: dict[str, Any] = {
-            "model": kwargs.get("image_model", self.model),
-            "messages": messages,
-        }
+        image_model = kwargs.get("image_model") or self.model
+        payload = self._build_image_chat_payload(
+            model=image_model,
+            messages=[{"role": "user", "content": user_content}],
+            kwargs=kwargs,
+        )
 
         async with httpx.AsyncClient(timeout=180) as client:
             resp = await client.post(
@@ -134,76 +125,152 @@ class OpenAICompatClient(BaseLLMClient):
                 json=payload,
             )
             resp.raise_for_status()
-            data = resp.json()
-            return self._extract_image_from_response(data)
+            return self._extract_image_from_response(resp.json())
+
+    @staticmethod
+    def _build_chat_content(contents: list[Any]) -> list[dict]:
+        message_content = []
+        for item in contents:
+            if isinstance(item, str):
+                message_content.append({"type": "text", "text": item})
+            elif isinstance(item, dict) and item.get("type") == "image_base64":
+                message_content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{item.get('media_type', 'image/png')};base64,{item['data']}"},
+                })
+            elif isinstance(item, bytes):
+                b64 = base64.b64encode(item).decode()
+                message_content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{b64}"},
+                })
+        return message_content
+
+    def _build_image_chat_payload(self, model: str, messages: list[dict], kwargs: dict) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            # Required by OpenRouter image output models. Compatible relays that
+            # ignore unknown fields should safely ignore this.
+            "modalities": ["image", "text"],
+        }
+        if kwargs.get("aspect_ratio") or kwargs.get("image_size"):
+            payload["image_config"] = build_image_config(
+                kwargs.get("aspect_ratio"),
+                kwargs.get("image_size"),
+            )
+        return payload
+
+    async def _generate_image_via_chat(self, prompt: str, image_model: str, **kwargs) -> Optional[bytes]:
+        system_instruction = kwargs.get("system_instruction")
+        messages: list[dict] = []
+        if system_instruction:
+            messages.append({"role": "system", "content": system_instruction})
+        messages.append({"role": "user", "content": prompt})
+
+        payload = self._build_image_chat_payload(model=image_model, messages=messages, kwargs=kwargs)
+
+        async with httpx.AsyncClient(timeout=180) as client:
+            resp = await client.post(
+                f"{self.base_url}/chat/completions",
+                headers=self._headers(),
+                json=payload,
+            )
+            resp.raise_for_status()
+            return self._extract_image_from_response(resp.json())
+
+    async def _generate_image_via_images_api(self, prompt: str, image_model: str, **kwargs) -> Optional[bytes]:
+        payload: dict[str, Any] = {
+            "model": image_model,
+            "prompt": prompt,
+            "n": kwargs.get("n", 1),
+        }
+        size = resolve_openai_image_size(
+            image_model,
+            kwargs.get("aspect_ratio"),
+            kwargs.get("image_size"),
+            kwargs.get("size"),
+        )
+        if size:
+            payload["size"] = size
+        quality = kwargs.get("quality")
+        if quality:
+            payload["quality"] = quality
+
+        async with httpx.AsyncClient(timeout=180) as client:
+            resp = await client.post(
+                f"{self.base_url}/images/generations",
+                headers=self._headers(),
+                json=payload,
+            )
+            resp.raise_for_status()
+            return await self._extract_image_from_images_response(resp.json(), client)
+
+    @staticmethod
+    async def _extract_image_from_images_response(data: dict, client: httpx.AsyncClient) -> Optional[bytes]:
+        items = data.get("data") or []
+        if not items:
+            return None
+        first = items[0]
+        b64_json = first.get("b64_json")
+        if b64_json:
+            return base64.b64decode(b64_json)
+        url = first.get("url")
+        if url:
+            resp = await client.get(url, timeout=180)
+            resp.raise_for_status()
+            return resp.content
+        return None
+
+    @staticmethod
+    def _decode_data_url(url: str) -> Optional[bytes]:
+        if not url.startswith("data:") or "," not in url:
+            return None
+        return base64.b64decode(url.split(",", 1)[1])
 
     @staticmethod
     def _extract_image_from_response(data: dict) -> Optional[bytes]:
-        """Extract base64 image bytes from a chat completions response.
-
-        Handles multiple response formats:
-        1. content is list with image_url parts (GPT-4o style)
-        2. content is list with image parts
-        3. content is a string with markdown-style base64 image (e.g. ![image](data:image/...;base64,...))
-        4. content is a plain base64 string (some providers)
-        """
+        """Extract image bytes from chat-completions image responses."""
         import re
 
-        content = data.get("choices", [{}])[0].get("message", {}).get("content")
-        if content is None:
-            return None
+        message = data.get("choices", [{}])[0].get("message", {})
 
+        # OpenRouter image output format: choices[0].message.images[].image_url.url
+        for image in message.get("images") or []:
+            url = (image.get("image_url") or {}).get("url", "")
+            decoded = OpenAICompatClient._decode_data_url(url)
+            if decoded:
+                return decoded
+
+        content = message.get("content")
         if isinstance(content, list):
             for part in content:
-                # Format: {"type": "image_url", "image_url": {"url": "data:image/...;base64,..."}}
                 if part.get("type") == "image_url":
-                    url = part.get("image_url", {}).get("url", "")
-                    if url.startswith("data:"):
-                        b64_str = url.split(",", 1)[1]
-                        return base64.b64decode(b64_str)
-                # Format: {"type": "image", "image": {"data": "base64..."}}
+                    decoded = OpenAICompatClient._decode_data_url(
+                        part.get("image_url", {}).get("url", "")
+                    )
+                    if decoded:
+                        return decoded
                 if part.get("type") == "image":
                     img_data = part.get("image", {})
                     if isinstance(img_data, dict) and "data" in img_data:
                         return base64.b64decode(img_data["data"])
 
         if isinstance(content, str) and content:
-            # Try markdown-style: ![...](data:image/...;base64,...)
-            match = re.search(r'data:image/[^;]+;base64,([A-Za-z0-9+/=\s]+)', content)
+            match = re.search(r"data:image/[^;]+;base64,([A-Za-z0-9+/=\s]+)", content)
             if match:
-                b64_str = match.group(1).replace('\n', '').replace(' ', '')
+                b64_str = match.group(1).replace("\n", "").replace(" ", "")
                 return base64.b64decode(b64_str)
 
         return None
 
     async def generate_image_from_chat(self, contents: list, **kwargs) -> Optional[bytes]:
-        """Generate image from multimodal chat contents via /chat/completions.
-
-        Accepts the same content format as chat_with_images (text strings,
-        image_base64 dicts, raw bytes) but extracts image data from the response
-        instead of text.
-        """
-        user_content: list[dict] = []
-        for item in contents:
-            if isinstance(item, str):
-                user_content.append({"type": "text", "text": item})
-            elif isinstance(item, dict) and item.get("type") == "image_base64":
-                user_content.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{item.get('media_type', 'image/png')};base64,{item['data']}"},
-                })
-            elif isinstance(item, bytes):
-                b64 = base64.b64encode(item).decode()
-                user_content.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/png;base64,{b64}"},
-                })
-
-        messages: list[dict] = [{"role": "user", "content": user_content}]
-        payload: dict[str, Any] = {
-            "model": kwargs.get("image_model", self.model),
-            "messages": messages,
-        }
+        image_model = kwargs.get("image_model") or self.model
+        payload = self._build_image_chat_payload(
+            model=image_model,
+            messages=[{"role": "user", "content": self._build_chat_content(contents)}],
+            kwargs=kwargs,
+        )
 
         async with httpx.AsyncClient(timeout=180) as client:
             resp = await client.post(
@@ -212,8 +279,7 @@ class OpenAICompatClient(BaseLLMClient):
                 json=payload,
             )
             resp.raise_for_status()
-            data = resp.json()
-            return self._extract_image_from_response(data)
+            return self._extract_image_from_response(resp.json())
 
     async def health_check(self) -> bool:
         """Verify API key by sending a minimal chat request."""

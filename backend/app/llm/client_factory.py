@@ -22,6 +22,15 @@ class LLMClientFactory:
                 api_key=api_key,
                 base_url=base_url or "https://openrouter.ai/api/v1",
                 model=model,
+                image_api_mode="chat",
+                **kwargs,
+            )
+        elif provider == "openai_images":
+            return OpenAICompatClient(
+                api_key=api_key,
+                base_url=base_url or "https://api.openai.com/v1",
+                model=model or "gpt-image-1",
+                image_api_mode="images",
                 **kwargs,
             )
         elif provider == "gemini":

@@ -13,6 +13,7 @@ from app.models.generation import GenerationResult, GenerationTask, PipelineEven
 from app.models.user import User
 from app.schemas.generation import (
     AvailableModelsResponse,
+    ContinueGenerationRequest,
     FavoriteRequest,
     GenerateRequest,
     ResultResponse,
@@ -54,6 +55,9 @@ async def create_generation_task(
         num_candidates=req.num_candidates,
         aspect_ratio=req.aspect_ratio,
         max_critic_rounds=req.max_critic_rounds,
+        optimize_input=req.optimize_input,
+        vector_export=req.vector_export,
+        cost_budget_usd=req.budget_usd,
         chat_model=req.chat_model_name,
         chat_key_id=req.chat_key_id,
         image_model=req.image_model_name,
@@ -70,11 +74,88 @@ async def create_generation_task(
         "retriever_content_limit": req.retriever_content_limit,
         "retriever_top_k": req.retriever_top_k,
         "retriever_pool_size": req.retriever_pool_size,
+        "image_size": req.image_size,
+        "vector_export": req.vector_export,
     }
     bg_task = asyncio.create_task(run_generation_task(task.id, extra_params=extra_params))
     _background_tasks[str(task.id)] = bg_task
 
     # Cleanup finished tasks
+    for tid in list(_background_tasks.keys()):
+        if _background_tasks[tid].done():
+            del _background_tasks[tid]
+
+    return TaskCreateResponse(
+        task_id=task.id,
+        status=task.status,
+        stream_url=f"/api/v1/generate/{task.id}/stream",
+    )
+
+
+@router.post("/{task_id}/continue", response_model=TaskCreateResponse, status_code=status.HTTP_201_CREATED)
+async def continue_generation_task(
+    task_id: uuid.UUID,
+    req: ContinueGenerationRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    parent_result = await db.execute(
+        select(GenerationTask).where(
+            GenerationTask.id == task_id,
+            GenerationTask.user_id == user.id,
+            GenerationTask.status == "completed",
+        )
+    )
+    parent = parent_result.scalar_one_or_none()
+    if not parent:
+        raise HTTPException(status_code=404, detail="找不到可续跑的已完成任务")
+
+    source_result_query = select(GenerationResult).where(
+        GenerationResult.task_id == task_id,
+        GenerationResult.user_id == user.id,
+    )
+    if req.result_id is not None:
+        source_result_query = source_result_query.where(GenerationResult.id == req.result_id)
+    else:
+        source_result_query = source_result_query.where(GenerationResult.candidate_index == 0)
+    source_result = (await db.execute(source_result_query)).scalar_one_or_none()
+    if not source_result:
+        raise HTTPException(status_code=404, detail="找不到可续跑的来源结果")
+
+    task = GenerationTask(
+        user_id=user.id,
+        task_type=parent.task_type,
+        content=parent.content,
+        visual_intent=parent.visual_intent,
+        pipeline_mode="continue_feedback",
+        retrieval_setting=parent.retrieval_setting,
+        num_candidates=1,
+        aspect_ratio=parent.aspect_ratio,
+        max_critic_rounds=req.additional_critic_rounds,
+        optimize_input=False,
+        vector_export=req.vector_export,
+        cost_budget_usd=req.budget_usd,
+        chat_model=parent.chat_model,
+        chat_key_id=parent.chat_key_id,
+        image_model=parent.image_model,
+        image_key_id=parent.image_key_id,
+        parent_task_id=parent.id,
+        user_feedback=req.feedback,
+        status="pending",
+    )
+    db.add(task)
+    await db.commit()
+    await db.refresh(task)
+
+    from app.services.generation_service import run_generation_task
+    extra_params = {
+        "continue_from_result_id": source_result.id,
+        "image_size": req.image_size,
+        "vector_export": req.vector_export,
+    }
+    bg_task = asyncio.create_task(run_generation_task(task.id, extra_params=extra_params))
+    _background_tasks[str(task.id)] = bg_task
+
     for tid in list(_background_tasks.keys()):
         if _background_tasks[tid].done():
             del _background_tasks[tid]
@@ -187,7 +268,9 @@ async def get_task_status(
                 image_url=f"/uploads/{r.image_path}" if r.image_path else None,
                 thumbnail_url=f"/uploads/{r.thumbnail_path}" if r.thumbnail_path else None,
                 svg_url=f"/uploads/{r.svg_path}" if r.svg_path else None,
+                pdf_url=f"/uploads/{r.pdf_path}" if r.pdf_path else None,
                 quality_score=r.quality_score,
+                metadata=r.metadata_,
                 is_favorited=r.is_favorited,
                 created_at=r.created_at,
             )
@@ -196,6 +279,9 @@ async def get_task_status(
         created_at=task.created_at,
         started_at=task.started_at,
         completed_at=task.completed_at,
+        cost_estimated_usd=task.cost_estimated_usd,
+        cost_budget_usd=task.cost_budget_usd,
+        cost_details=task.cost_details,
     )
 
 
@@ -249,6 +335,8 @@ async def get_history(
             "quality_score": first_result.quality_score if first_result else None,
             "is_favorited": first_result.is_favorited if first_result else False,
             "result_id": first_result.id if first_result else None,
+            "cost_estimated_usd": task.cost_estimated_usd,
+            "cost_budget_usd": task.cost_budget_usd,
         })
 
     return {"total": total, "page": page, "page_size": page_size, "items": items}
@@ -363,6 +451,10 @@ async def download_task_results(
                                 abs_path = os.path.join(settings.UPLOAD_DIR, r.svg_path)
                                 if os.path.exists(abs_path):
                                     zf.write(abs_path, f"candidate_{r.candidate_index}.svg")
+                            if r.pdf_path:
+                                abs_path = os.path.join(settings.UPLOAD_DIR, r.pdf_path)
+                                if os.path.exists(abs_path):
+                                    zf.write(abs_path, f"candidate_{r.candidate_index}.pdf")
                     buf.seek(0)
                     return StreamingResponse(
                         buf,
@@ -403,6 +495,10 @@ async def download_task_results(
                 abs_path = os.path.join(settings.UPLOAD_DIR, r.svg_path)
                 if os.path.exists(abs_path):
                     zf.write(abs_path, f"candidate_{r.candidate_index}.svg")
+            if r.pdf_path:
+                abs_path = os.path.join(settings.UPLOAD_DIR, r.pdf_path)
+                if os.path.exists(abs_path):
+                    zf.write(abs_path, f"candidate_{r.candidate_index}.pdf")
 
     buf.seek(0)
     return StreamingResponse(

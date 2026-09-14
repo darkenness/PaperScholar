@@ -41,7 +41,7 @@
   "username": "string",
   "email": "string",
   "password": "string",
-  "verification_code": "string"
+  "invite_code": "string"
 }
 
 // Response 201
@@ -52,14 +52,14 @@
 }
 ```
 
-### POST `/auth/send-code` — 发送验证码
+### POST `/auth/send-code` — 已停用
 
 ```json
 // Request
 { "email": "user@example.com" }
 
-// Response 200
-{ "message": "验证码已发送" }
+// Response 410
+{ "detail": "当前已改为邀请码注册，无需邮箱验证码" }
 ```
 
 ### POST `/auth/login` — 登录

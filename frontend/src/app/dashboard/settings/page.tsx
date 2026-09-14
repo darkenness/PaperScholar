@@ -4,6 +4,20 @@ import { useEffect, useState } from 'react';
 import { apiKeysApi, applicationsApi } from '@/lib/api';
 import { useAuthStore } from '@/stores/auth';
 
+const providerOptionsFor = (type: 'chat' | 'image') => (
+  type === 'image'
+    ? [
+        { value: 'openai_images', label: 'OpenAI Images (/images/generations)' },
+        { value: 'openai_compat', label: 'OpenAI 兼容 (OpenRouter/Chat 图像)' },
+        { value: 'gemini', label: 'Google Gemini' },
+      ]
+    : [
+        { value: 'openai_compat', label: 'OpenAI 兼容 (OpenRouter/自定义)' },
+        { value: 'gemini', label: 'Google Gemini' },
+        { value: 'anthropic', label: 'Anthropic Claude' },
+      ]
+);
+
 export default function SettingsPage() {
   const user = useAuthStore((s) => s.user);
   const [chatKeys, setChatKeys] = useState<any[]>([]);
@@ -120,7 +134,17 @@ export default function SettingsPage() {
     <div className="tech-panel overflow-hidden">
       <div className="px-5 py-4 border-b border-[var(--border-main)] flex justify-between items-center bg-[var(--badge-bg)]">
         <h3 className="font-bold text-[var(--text-primary)] text-sm">{type === 'chat' ? 'Chat 模型' : 'Image 模型'} API Keys</h3>
-        <button onClick={() => { setShowForm(true); setFormType(type as any); }} className="text-xs bg-primary-600 hover:bg-primary-500 text-white px-3 py-1.5">+ 添加</button>
+        <button
+          onClick={() => {
+            const nextType = type as 'chat' | 'image';
+            setShowForm(true);
+            setFormType(nextType);
+            setProvider(providerOptionsFor(nextType)[0].value);
+          }}
+          className="text-xs bg-primary-600 hover:bg-primary-500 text-white px-3 py-1.5"
+        >
+          + 添加
+        </button>
       </div>
       {keys.length === 0 ? (
         <div className="py-8 text-center text-[var(--text-muted)] text-sm">暂无配置</div>
@@ -186,14 +210,19 @@ export default function SettingsPage() {
             <div>
               <label className="text-xs text-[var(--text-muted)] mb-1 block">Provider</label>
               <select value={provider} onChange={(e) => setProvider(e.target.value)} className="w-full input-tech text-sm py-2">
-                <option value="openai_compat">OpenAI 兼容 (OpenRouter/自定义)</option>
-                <option value="gemini">Google Gemini</option>
-                <option value="anthropic">Anthropic Claude</option>
+                {providerOptionsFor(formType).map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
               </select>
             </div>
             <div>
-              <label className="text-xs text-[var(--text-muted)] mb-1 block">Base URL (可选，OpenAI 兼容需含 /v1)</label>
-              <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://openrouter.ai/api/v1" className="w-full input-tech text-sm" />
+              <label className="text-xs text-[var(--text-muted)] mb-1 block">Base URL (可选，需含 /v1)</label>
+              <input
+                value={baseUrl}
+                onChange={(e) => setBaseUrl(e.target.value)}
+                placeholder={provider === 'openai_images' ? 'https://api.vectorengine.cn/v1' : 'https://openrouter.ai/api/v1'}
+                className="w-full input-tech text-sm"
+              />
             </div>
             <div>
               <label className="text-xs text-[var(--text-muted)] mb-1 block">API Key *</label>
@@ -201,7 +230,12 @@ export default function SettingsPage() {
             </div>
             <div>
               <label className="text-xs text-[var(--text-muted)] mb-1 block">模型名称 (可选)</label>
-              <input value={modelName} onChange={(e) => setModelName(e.target.value)} placeholder="gemini-2.5-pro" className="w-full input-tech text-sm" />
+              <input
+                value={modelName}
+                onChange={(e) => setModelName(e.target.value)}
+                placeholder={provider === 'openai_images' ? 'gpt-image-2-all' : 'gemini-2.5-pro'}
+                className="w-full input-tech text-sm"
+              />
             </div>
             {formError && <div className="text-red-400 text-xs">{formError}</div>}
             <div className="flex gap-3 pt-2">

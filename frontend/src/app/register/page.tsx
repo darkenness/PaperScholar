@@ -11,40 +11,16 @@ export default function RegisterPage() {
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [code, setCode] = useState('');
+  const [inviteCode, setInviteCode] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [codeSent, setCodeSent] = useState(false);
-  const [codeLoading, setCodeLoading] = useState(false);
-  const [countdown, setCountdown] = useState(0);
-
-  const handleSendCode = async () => {
-    if (!email) { setError('请输入邮箱'); return; }
-    setCodeLoading(true);
-    setError('');
-    try {
-      await authApi.sendCode(email);
-      setCodeSent(true);
-      setCountdown(60);
-      const timer = setInterval(() => {
-        setCountdown((prev) => {
-          if (prev <= 1) { clearInterval(timer); return 0; }
-          return prev - 1;
-        });
-      }, 1000);
-    } catch (err: any) {
-      setError(err.message || '发送验证码失败');
-    } finally {
-      setCodeLoading(false);
-    }
-  };
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setLoading(true);
     try {
-      const data = await authApi.register({ username, email, password, verification_code: code || undefined });
+      const data = await authApi.register({ username, email, password, invite_code: inviteCode });
       setAuth(data.user, data.access_token);
       router.push('/dashboard');
     } catch (err: any) {
@@ -92,18 +68,8 @@ export default function RegisterPage() {
             <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="至少6位字符" required minLength={6} className="w-full input-tech" />
           </div>
           <div className="space-y-1">
-            <label className="block text-[11px] font-mono text-[var(--text-muted)] uppercase tracking-wider">验证码 <span className="text-[var(--text-faint)]">(可选)</span></label>
-            <div className="flex gap-3">
-              <input type="text" value={code} onChange={(e) => setCode(e.target.value)} placeholder="6位数字，开发模式可留空" maxLength={6} className="flex-1 input-tech" />
-              <button
-                type="button"
-                onClick={handleSendCode}
-                disabled={codeLoading || countdown > 0}
-                className="btn-ghost text-sm whitespace-nowrap disabled:opacity-50 font-mono"
-              >
-                {codeLoading ? '发送中...' : countdown > 0 ? `${countdown}s` : codeSent ? '重新发送' : '获取验证码'}
-              </button>
-            </div>
+            <label className="block text-[11px] font-mono text-[var(--text-muted)] uppercase tracking-wider">邀请码</label>
+            <input type="text" value={inviteCode} onChange={(e) => setInviteCode(e.target.value)} placeholder="请输入邀请码" required className="w-full input-tech" />
           </div>
 
           {error && (

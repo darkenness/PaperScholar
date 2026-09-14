@@ -4,8 +4,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_current_admin, get_current_user
 from app.core.database import get_db
 from app.core.security import decrypt_api_key, encrypt_api_key, mask_api_key
+from app.llm.provider_capabilities import validate_provider_for_model_type
 from app.models.api_key import ApiApplication, ApiKeyConfig
 from app.models.user import User
 from app.schemas.api_key import (
@@ -18,7 +20,6 @@ from app.schemas.api_key import (
     ApiKeyUpdate,
     ApiKeyVerifyResponse,
 )
-from app.api.deps import get_current_admin, get_current_user
 
 router = APIRouter(prefix="/api-keys", tags=["API Key管理"])
 
@@ -45,6 +46,40 @@ def _to_response(cfg: ApiKeyConfig) -> ApiKeyResponse:
     )
 
 
+async def _verify_config(cfg: ApiKeyConfig) -> tuple[bool, str]:
+    """Verify a key using provider capabilities.
+
+    Chat keys use a minimal health check. Image keys must return image bytes so
+    incompatible models, relay endpoints, or providers fail before generation.
+    """
+    from app.llm.client_factory import LLMClientFactory
+
+    raw_key = decrypt_api_key(cfg.api_key_encrypted)
+    validate_provider_for_model_type(cfg.model_type, cfg.provider)
+    client = LLMClientFactory.create(
+        provider=cfg.provider,
+        api_key=raw_key,
+        base_url=cfg.base_url,
+        model=cfg.model_name or "",
+    )
+
+    if cfg.model_type == "image":
+        image = await client.generate_image(
+            prompt="A simple black circle on a plain white background.",
+            image_model=cfg.model_name or "",
+            aspect_ratio="1:1",
+            image_size="1K",
+        )
+        if image and len(image) > 512:
+            return True, ""
+        return False, "图片模型验证失败：未返回有效图片数据"
+
+    ok = await client.health_check()
+    if ok:
+        return True, ""
+    return False, "health_check 返回 False（API 连接失败或认证无效）"
+
+
 @router.get("", response_model=ApiKeyListResponse)
 async def list_api_keys(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     result = await db.execute(
@@ -58,6 +93,11 @@ async def list_api_keys(user: User = Depends(get_current_user), db: AsyncSession
 
 @router.post("", response_model=ApiKeyResponse, status_code=status.HTTP_201_CREATED)
 async def create_api_key(req: ApiKeyCreate, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    try:
+        validate_provider_for_model_type(req.model_type, req.provider)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     cfg = ApiKeyConfig(
         user_id=user.id,
         model_type=req.model_type,
@@ -81,21 +121,10 @@ async def verify_api_key(key_id: int, user: User = Depends(get_current_user), db
     if not cfg:
         raise HTTPException(status_code=404, detail="API Key配置不存在")
 
-    from app.llm.client_factory import LLMClientFactory
-
-    raw_key = decrypt_api_key(cfg.api_key_encrypted)
     verified = False
     error_msg = ""
     try:
-        client = LLMClientFactory.create(
-            provider=cfg.provider,
-            api_key=raw_key,
-            base_url=cfg.base_url,
-            model=cfg.model_name or "",
-        )
-        verified = await client.health_check()
-        if not verified:
-            error_msg = "health_check 返回 False（API 连接失败或认证无效）"
+        verified, error_msg = await _verify_config(cfg)
     except Exception as e:
         error_msg = str(e)
 
@@ -120,16 +149,23 @@ async def update_api_key(key_id: int, req: ApiKeyUpdate, user: User = Depends(ge
         raise HTTPException(status_code=404, detail="API Key配置不存在")
 
     if req.base_url is not None:
-        cfg.base_url = req.base_url or None  # empty string -> None
+        cfg.base_url = req.base_url or None
+        cfg.is_verified = False
     if req.api_key is not None:
         cfg.api_key_encrypted = encrypt_api_key(req.api_key)
-        cfg.is_verified = False  # reset verification after key change
+        cfg.is_verified = False
     if req.model_name is not None:
         cfg.model_name = req.model_name or None
+        cfg.is_verified = False
     if req.priority is not None:
         cfg.priority = req.priority
     if req.is_enabled is not None:
         cfg.is_enabled = req.is_enabled
+
+    try:
+        validate_provider_for_model_type(cfg.model_type, cfg.provider)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     await db.commit()
     await db.refresh(cfg)
@@ -160,7 +196,6 @@ async def create_application(req: ApiApplicationCreate, user: User = Depends(get
     if user.system_api_approved:
         raise HTTPException(status_code=400, detail="您已获批系统API使用权限")
 
-    # Check pending
     result = await db.execute(
         select(ApiApplication).where(ApiApplication.user_id == user.id, ApiApplication.status == "pending")
     )

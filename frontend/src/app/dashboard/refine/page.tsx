@@ -1,7 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
+import { refineApi } from '@/lib/api';
 import ModelSelector, { type ModelSelection } from '@/components/ModelSelector';
 import ImageLightbox from '@/components/ImageLightbox';
 
@@ -12,7 +13,13 @@ const RESOLUTION_OPTIONS = [
   { value: '4K', label: '4K', desc: '最高质量，耗时更长' },
 ];
 
-const ASPECT_RATIO_OPTIONS = ['16:9', '4:3', '3:4', '1:1', '9:16'];
+const ASPECT_RATIO_OPTIONS = ['16:9', '4:3', '3:4', '3:2', '2:3', '1:1', '9:16'];
+
+const sizeToAspectRatio = (size: string) => {
+  if (size === '1536x1024') return '3:2';
+  if (size === '1024x1536') return '2:3';
+  return '1:1';
+};
 
 export default function RefinePage() {
   const [mode, setMode] = useState<'enhance' | 'style'>('enhance');
@@ -26,6 +33,26 @@ export default function RefinePage() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [modelSel, setModelSel] = useState<ModelSelection>({ chatModelName: '', chatKeyId: null, imageModelName: '', imageKeyId: null });
+  const fixedImageSizes = useMemo(
+    () => modelSel.imageSizeMode === 'fixed' ? (modelSel.imageSizeOptions || []) : [],
+    [modelSel.imageSizeMode, modelSel.imageSizeOptions],
+  );
+  const usesFixedImageSize = fixedImageSizes.length > 0;
+  const resolutionOptions = usesFixedImageSize
+    ? fixedImageSizes.map((size) => ({ value: size, label: size, desc: '固定输出尺寸' }))
+    : RESOLUTION_OPTIONS;
+
+  useEffect(() => {
+    if (!usesFixedImageSize) {
+      if (resolution.includes('x')) setResolution('2K');
+      return;
+    }
+    setResolution((current) => {
+      const next = fixedImageSizes.includes(current) ? current : fixedImageSizes[0];
+      setAspectRatio(sizeToAspectRatio(next));
+      return next;
+    });
+  }, [usesFixedImageSize, fixedImageSizes, resolution]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, isRef = false) => {
     const f = e.target.files?.[0];
@@ -51,12 +78,8 @@ export default function RefinePage() {
     if (modelSel.imageKeyId) formData.append('image_key_id', String(modelSel.imageKeyId));
 
     try {
-      const res = await fetch(`${API_BASE}/api/v1/refine/enhance`, {
-        method: 'POST', body: formData,
-        headers: { 'Authorization': `Bearer ${token}` },
-      });
-      if (!res.ok) { const err = await res.json(); throw new Error(err.detail || '请求失败'); }
-      setResult(await res.json());
+      const data = await refineApi.enhance(formData);
+      setResult(data);
       toast.success('图片增强完成');
     } catch (e: any) { toast.error(e.message); }
     setLoading(false);
@@ -77,12 +100,8 @@ export default function RefinePage() {
     if (modelSel.imageKeyId) formData.append('image_key_id', String(modelSel.imageKeyId));
 
     try {
-      const res = await fetch(`${API_BASE}/api/v1/refine/style-transfer`, {
-        method: 'POST', body: formData,
-        headers: { 'Authorization': `Bearer ${token}` },
-      });
-      if (!res.ok) { const err = await res.json(); throw new Error(err.detail || '请求失败'); }
-      setResult(await res.json());
+      const data = await refineApi.styleTransfer(formData);
+      setResult(data);
       toast.success('风格迁移完成');
     } catch (e: any) { toast.error(e.message); }
     setLoading(false);
@@ -110,10 +129,13 @@ export default function RefinePage() {
           <div className="flex items-center gap-2">
             <label className="text-[11px] font-bold text-[var(--text-muted)] uppercase tracking-wider whitespace-nowrap">目标分辨率</label>
             <div className="flex gap-1.5">
-              {RESOLUTION_OPTIONS.map((opt) => (
+              {resolutionOptions.map((opt) => (
                 <button
                   key={opt.value}
-                  onClick={() => setResolution(opt.value)}
+                  onClick={() => {
+                    setResolution(opt.value);
+                    if (usesFixedImageSize) setAspectRatio(sizeToAspectRatio(opt.value));
+                  }}
                   className={`px-3 py-1.5 text-xs font-medium rounded transition-all ${
                     resolution === opt.value
                       ? 'bg-primary-600 text-white'
@@ -126,7 +148,7 @@ export default function RefinePage() {
               ))}
             </div>
             <span className="text-[10px] text-[var(--text-faint)]">
-              {RESOLUTION_OPTIONS.find(o => o.value === resolution)?.desc}
+              {resolutionOptions.find(o => o.value === resolution)?.desc}
             </span>
           </div>
           <div className="flex items-center gap-2">
@@ -134,6 +156,7 @@ export default function RefinePage() {
             <select
               value={aspectRatio}
               onChange={(e) => setAspectRatio(e.target.value)}
+              disabled={usesFixedImageSize}
               className="input-tech text-xs py-1.5 px-2"
             >
               {ASPECT_RATIO_OPTIONS.map((r) => (

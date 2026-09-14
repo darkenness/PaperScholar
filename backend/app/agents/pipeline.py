@@ -204,6 +204,90 @@ Write Python matplotlib code to generate the plot. Only provide the code without
 """
 
 
+CONTEXT_ENRICHER_SYSTEM = """You are a scientific figure planning assistant.
+Rewrite the provided source context into a concise, diagram-ready specification.
+Extract the key modules, inputs, outputs, data/control flow, training/inference
+stages, and any important constraints. Preserve facts; do not invent components.
+Output only the optimized source context."""
+
+
+CAPTION_SHARPENER_SYSTEM = """You are a scientific caption refinement assistant.
+Rewrite the figure caption or visual intent into a precise visual specification.
+Clarify what the figure should communicate, the key elements to show, and what
+should stay outside the image. Preserve the user's intent; do not add new claims.
+Output only the optimized caption/visual intent."""
+
+
+class InputOptimizerAgent(BaseAgent):
+    """Preprocess raw source context and caption before retrieval/planning."""
+
+    async def process(self, data: Dict[str, Any], on_event: Optional[Callable] = None) -> Dict[str, Any]:
+        await self.emit(on_event, "stage", {"name": "input_optimizer", "status": "running", "progress": 0.05})
+
+        content = data.get("content") or ""
+        caption = data.get("visual_intent") or ""
+        task_type = data.get("task_type", "diagram")
+        content_label = "Methodology Section" if task_type == "diagram" else "Raw Data"
+        intent_label = "Diagram Caption" if task_type == "diagram" else "Visual Intent"
+
+        context_prompt = (
+            f"{content_label}:\n{content}\n\n"
+            f"{intent_label}:\n{caption}\n\n"
+            "Optimized source context:"
+        )
+        caption_prompt = (
+            f"{content_label}:\n{content}\n\n"
+            f"{intent_label}:\n{caption}\n\n"
+            "Optimized caption / visual specification:"
+        )
+
+        try:
+            # Sequential calls to avoid triggering rate limits
+            optimized_context = await self.chat_lb.chat(
+                messages=[
+                    {"role": "system", "content": CONTEXT_ENRICHER_SYSTEM},
+                    {"role": "user", "content": context_prompt},
+                ],
+                temperature=0.35,
+                max_tokens=4096,
+            )
+            optimized_caption = await self.chat_lb.chat(
+                messages=[
+                    {"role": "system", "content": CAPTION_SHARPENER_SYSTEM},
+                    {"role": "user", "content": caption_prompt},
+                ],
+                temperature=0.35,
+                max_tokens=1024,
+            )
+            data["original_content"] = content
+            data["original_visual_intent"] = caption
+            data["content"] = optimized_context.strip() or content
+            data["visual_intent"] = optimized_caption.strip() or caption
+            data["input_optimizer"] = {
+                "optimized": True,
+                "original_content_chars": len(content),
+                "optimized_content_chars": len(data["content"]),
+                "original_caption_chars": len(caption),
+                "optimized_caption_chars": len(data["visual_intent"]),
+            }
+            await self.emit(on_event, "intermediate", {
+                "type": "text",
+                "stage": "input_optimizer",
+                "content": f"输入已优化：context {len(content)}→{len(data['content'])} chars, caption {len(caption)}→{len(data['visual_intent'])} chars",
+            })
+        except Exception as e:
+            logger.warning("Input optimizer failed, using original input: %s", e)
+            data["input_optimizer"] = {"optimized": False, "error": str(e)}
+            await self.emit(on_event, "intermediate", {
+                "type": "text",
+                "stage": "input_optimizer",
+                "content": f"输入优化失败，已回退原始输入：{e}",
+            })
+
+        await self.emit(on_event, "stage", {"name": "input_optimizer", "status": "done", "progress": 0.1})
+        return data
+
+
 class PlannerAgent(BaseAgent):
     """Planner Agent with in-context learning from retrieved reference examples.
     Adapted from PaperBanana's planner_agent.py."""
@@ -312,44 +396,66 @@ class StylistAgent(BaseAgent):
         return data
 
 
-def _execute_plot_code(code: str) -> Optional[str]:
-    """Execute matplotlib code in a subprocess and return base64 PNG.
-    Adapted from PaperBanana's Visualizer plot code execution."""
+def _execute_plot_code_artifacts(code: str, vector_export: str = "none") -> dict[str, Any]:
+    """Execute matplotlib code in a subprocess and return raster/vector artifacts."""
     try:
         match = re.search(r"```python(.*?)```", code, re.DOTALL)
         clean_code = match.group(1).strip() if match else code.strip()
-        # Wrap code to save figure to bytes
-        wrapper = f"""
+        vector_export = (vector_export or "none").lower()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            png_path = os.path.join(tmpdir, "plot.png")
+            svg_path = os.path.join(tmpdir, "plot.svg")
+            pdf_path = os.path.join(tmpdir, "plot.pdf")
+
+            save_svg = vector_export in ("svg", "both")
+            save_pdf = vector_export in ("pdf", "both")
+
+            wrapper = f"""
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
-import io, base64, sys
+import sys
 
 try:
 {chr(10).join('    ' + line for line in clean_code.split(chr(10)))}
     plt.tight_layout()
-    buf = io.BytesIO()
-    plt.savefig(buf, format='jpeg', dpi=300, bbox_inches='tight', pil_kwargs={{'quality': 95}})
+    plt.savefig({png_path!r}, format='png', dpi=300, bbox_inches='tight')
+    {'plt.savefig(' + repr(svg_path) + ", format='svg', bbox_inches='tight')" if save_svg else ''}
+    {'plt.savefig(' + repr(pdf_path) + ", format='pdf', bbox_inches='tight')" if save_pdf else ''}
     plt.close('all')
-    buf.seek(0)
-    print(base64.b64encode(buf.getvalue()).decode(), end='')
+    print('OK', end='')
 except Exception as e:
     print(f'ERROR: {{e}}', file=sys.stderr)
     sys.exit(1)
 """
-        result = subprocess.run(
-            [sys.executable, "-c", wrapper],
-            capture_output=True, text=True, timeout=30,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-        else:
-            logger.warning(f"Plot code execution failed: {result.stderr[:200]}")
-            return None
+            result = subprocess.run(
+                [sys.executable, "-c", wrapper],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0 or result.stdout.strip() != "OK":
+                logger.warning(f"Plot code execution failed: {result.stderr[:200]}")
+                return {"image_base64": None, "error": result.stderr[:500]}
+
+            artifacts: dict[str, Any] = {"image_base64": None}
+            if os.path.exists(png_path):
+                with open(png_path, "rb") as f:
+                    artifacts["image_base64"] = base64.b64encode(f.read()).decode()
+            if save_svg and os.path.exists(svg_path):
+                with open(svg_path, "r", encoding="utf-8", errors="replace") as f:
+                    artifacts["vector_svg"] = f.read()
+            if save_pdf and os.path.exists(pdf_path):
+                with open(pdf_path, "rb") as f:
+                    artifacts["vector_pdf_base64"] = base64.b64encode(f.read()).decode()
+            return artifacts
     except Exception as e:
         logger.warning(f"Plot code execution error: {e}")
-        return None
+        return {"image_base64": None, "error": str(e)}
+
+
+def _execute_plot_code(code: str) -> Optional[str]:
+    """Execute matplotlib code in a subprocess and return base64 PNG."""
+    return _execute_plot_code_artifacts(code).get("image_base64")
 
 
 def _convert_png_to_jpg_b64(png_bytes: bytes, quality: int = 95) -> Optional[str]:
@@ -401,10 +507,20 @@ class VisualizerAgent(BaseAgent):
 
             # Execute code in subprocess
             loop = asyncio.get_running_loop()
-            b64_result = await loop.run_in_executor(None, _execute_plot_code, code)
+            artifacts = await loop.run_in_executor(
+                None,
+                _execute_plot_code_artifacts,
+                code,
+                data.get("vector_export", "none"),
+            )
+            b64_result = artifacts.get("image_base64")
 
             if b64_result:
                 data["image_base64"] = b64_result
+                if artifacts.get("vector_svg"):
+                    data["vector_svg"] = artifacts["vector_svg"]
+                if artifacts.get("vector_pdf_base64"):
+                    data["vector_pdf_base64"] = artifacts["vector_pdf_base64"]
                 await self.emit(on_event, "intermediate", {"type": "image_ready", "stage": "visualizer"})
             else:
                 data["image_base64"] = None
@@ -490,6 +606,7 @@ class CriticAgent(BaseAgent):
 
         caption = data.get("visual_intent", "")
         image_b64 = data.get("image_base64")
+        user_feedback = (data.get("user_feedback") or "").strip()
 
         # Build multimodal content (image + text context) like PaperBanana
         critique_target = f"Target {'Diagram' if task_type == 'diagram' else 'Plot'} for Critique:"
@@ -500,12 +617,21 @@ class CriticAgent(BaseAgent):
         else:
             contents.append("[SYSTEM NOTICE] The image could not be generated. Please check the description for errors and provide a revised version.")
 
-        contents.append(f"Detailed Description: {detailed_description}\n{content_labels[0]}: {content_raw}\n{content_labels[1]}: {caption}\nYour Output:")
+        feedback_block = ""
+        if user_feedback:
+            feedback_block = (
+                "\nUser Feedback / Required Revision:\n"
+                f"{user_feedback}\n"
+                "When feasible, revise the detailed description to satisfy this user feedback. "
+                "Do not answer 'No changes needed.' unless the request is impossible or unsafe.\n"
+            )
+
+        contents.append(f"Detailed Description: {detailed_description}\n{content_labels[0]}: {content_raw}\n{content_labels[1]}: {caption}{feedback_block}\nYour Output:")
 
         try:
             response = await self.chat_lb.chat_with_images(contents=contents, temperature=0.7, system_prompt=system_prompt)
         except Exception:
-            fallback_prompt = f"{critique_target}\n\nDetailed Description: {detailed_description}\n{content_labels[0]}: {content_raw}\n{content_labels[1]}: {caption}\nYour Output:"
+            fallback_prompt = f"{critique_target}\n\nDetailed Description: {detailed_description}\n{content_labels[0]}: {content_raw}\n{content_labels[1]}: {caption}{feedback_block}\nYour Output:"
             response = await self.chat_lb.chat(
                 messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": fallback_prompt}],
                 temperature=0.7,
@@ -529,14 +655,22 @@ class CriticAgent(BaseAgent):
 
         suggestions = parsed.get("critic_suggestions", "No changes needed.")
         revised_description = parsed.get("revised_description", "No changes needed.")
+        if user_feedback and suggestions.strip() == "No changes needed." and revised_description.strip() == "No changes needed.":
+            suggestions = f"Apply user feedback: {user_feedback}"
+            revised_description = detailed_description + f"\n\nUser-requested revision to apply: {user_feedback}"
 
         # S5 fix: if JSON parse completely failed, mark this round as invalid
         # so _run_critic_loop can skip the visualizer re-generation
         if parse_failed:
-            data[f"critic_parse_failed_{round_idx}"] = True
-            suggestions = "No changes needed."
-            revised_description = "No changes needed."
-            logger.warning(f"Critic round {round_idx}: JSON parse failed, treating as no-op")
+            if user_feedback:
+                suggestions = f"Apply user feedback: {user_feedback}"
+                revised_description = detailed_description + f"\n\nUser-requested revision to apply: {user_feedback}"
+                logger.warning(f"Critic round {round_idx}: JSON parse failed, using feedback fallback")
+            else:
+                data[f"critic_parse_failed_{round_idx}"] = True
+                suggestions = "No changes needed."
+                revised_description = "No changes needed."
+                logger.warning(f"Critic round {round_idx}: JSON parse failed, treating as no-op")
 
         data[f"critic_suggestions_{round_idx}"] = suggestions
         data["critic_suggestions"] = suggestions
@@ -568,6 +702,7 @@ class PipelineEngine:
         from app.agents.polish_agent import PolishAgent
 
         self.retriever = RetrieverAgent(chat_lb=chat_lb, dataset_path=dataset_path)
+        self.input_optimizer = InputOptimizerAgent(chat_lb=chat_lb)
         self.planner = PlannerAgent(chat_lb=chat_lb)
         self.stylist = StylistAgent(chat_lb=chat_lb)
         self.visualizer = VisualizerAgent(chat_lb=chat_lb, image_lb=image_lb)
@@ -586,6 +721,18 @@ class PipelineEngine:
         pipeline_start = _time.monotonic()
         await self._emit(on_event, "stage", {"name": "pipeline", "status": "started", "mode": mode, "progress": 0.0})
 
+        if mode == "continue_feedback":
+            data = await self._run_continue_feedback(data, max_critic_rounds, on_event)
+            total = _time.monotonic() - pipeline_start
+            logger.info(f"[Pipeline] Continue completed in {total:.1f}s")
+            await self._emit(on_event, "stage", {"name": "pipeline", "status": "completed", "progress": 1.0})
+            return data
+
+        if data.get("optimize_input"):
+            t0 = _time.monotonic()
+            data = await self.input_optimizer.process(data, on_event)
+            logger.info(f"[Pipeline] Input optimizer completed in {_time.monotonic() - t0:.1f}s")
+
         # Run retriever first for modes that need references
         if mode in ("dev_full", "demo_full", "dev_planner", "dev_planner_stylist", "dev_planner_critic", "demo_planner_critic", "dev_retriever"):
             t0 = _time.monotonic()
@@ -602,6 +749,25 @@ class PipelineEngine:
         total = _time.monotonic() - pipeline_start
         logger.info(f"[Pipeline] Total pipeline completed in {total:.1f}s (mode={mode})")
         await self._emit(on_event, "stage", {"name": "pipeline", "status": "completed", "progress": 1.0})
+        return data
+
+    async def _run_continue_feedback(self, data: Dict[str, Any], max_critic_rounds: int, on_event: Optional[Callable]) -> Dict[str, Any]:
+        """Continue from a saved image/description using user feedback."""
+        await self._emit(on_event, "stage", {"name": "continue", "status": "running", "progress": 0.05})
+
+        current_desc = data.get("stylist_description") or data.get("planner_description") or ""
+        data["stylist_description"] = current_desc
+        data["critic_round"] = 0
+        data["critic_suggestions"] = ""
+
+        await self._emit(on_event, "intermediate", {
+            "type": "text",
+            "stage": "continue",
+            "content": "基于历史结果和用户反馈继续迭代",
+        })
+
+        data = await self._run_critic_loop(data, max_critic_rounds, on_event, source="stylist")
+        await self._emit(on_event, "stage", {"name": "continue", "status": "done", "progress": 0.95})
         return data
 
     async def _run_single(self, data: Dict[str, Any], mode: str, max_critic_rounds: int, on_event: Optional[Callable]) -> Dict[str, Any]:
@@ -656,9 +822,19 @@ class PipelineEngine:
                 code = await self.visualizer.chat_lb.chat(messages=messages, temperature=0.8)
                 data["plot_code"] = code
                 loop = asyncio.get_running_loop()
-                b64_result = await loop.run_in_executor(None, _execute_plot_code, code)
+                artifacts = await loop.run_in_executor(
+                    None,
+                    _execute_plot_code_artifacts,
+                    code,
+                    data.get("vector_export", "none"),
+                )
+                b64_result = artifacts.get("image_base64")
                 if b64_result:
                     data["image_base64"] = b64_result
+                    if artifacts.get("vector_svg"):
+                        data["vector_svg"] = artifacts["vector_svg"]
+                    if artifacts.get("vector_pdf_base64"):
+                        data["vector_pdf_base64"] = artifacts["vector_pdf_base64"]
 
             await self._emit(on_event, "stage", {"name": "visualizer", "status": "done", "progress": 0.6})
         elif mode == "dev_polish":

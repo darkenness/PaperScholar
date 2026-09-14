@@ -41,7 +41,7 @@
 
 ### 用户与管理
 
-- **用户认证**: 注册 / 登录、邮箱验证码、JWT 令牌（7 天过期）
+- **用户认证**: 注册 / 登录、邀请码注册、JWT 令牌（7 天过期）
 - **角色权限**: 管理员 / 普通用户，首个注册用户自动成为管理员
 - **API Key 管理**: 加密存储（Fernet AES-256）、在线验证、优先级排序
 - **系统 API 申请审核**: 用户申请 → 管理员审核 → 共享系统密钥
@@ -109,7 +109,7 @@ npm run dev
 
 ### 4. 首次使用
 
-1. 访问 http://localhost:3000/register 注册账号（**第一个注册的用户自动成为管理员**）
+1. 配置 `INVITE_CODE` 后访问 http://localhost:3000/register 注册账号（**第一个注册的用户自动成为管理员**）
 2. 在「API 配置」页面添加你的 LLM API Key（分别配置 Chat 和 Image 模型）
 3. 进入「图表生成」页面，选择 Pipeline 模式开始使用
 
@@ -144,7 +144,7 @@ paperscholar/
 ├── backend/                       # FastAPI 后端
 │   ├── app/
 │   │   ├── api/                   # REST API 路由（8 个模块）
-│   │   │   ├── auth.py            # 认证（注册/登录/验证码）
+│   │   │   ├── auth.py            # 认证（注册/登录/邀请码）
 │   │   │   ├── api_keys.py        # API Key 管理
 │   │   │   ├── applications.py    # 系统 API 申请
 │   │   │   ├── generate.py        # 图表生成 + SSE 流
@@ -195,7 +195,7 @@ paperscholar/
 
 | 模块 | 路径前缀 | 主要端点 |
 |------|----------|----------|
-| 认证 | `/api/v1/auth` | 注册、登录、验证码、用户信息 |
+| 认证 | `/api/v1/auth` | 注册、登录、邀请码、用户信息 |
 | API Key | `/api/v1/api-keys` | CRUD、验证 |
 | 申请 | `/api/v1/api-applications` | 创建申请、查看我的申请 |
 | 生成 | `/api/v1/generate` | 创建任务、SSE 流、历史列表、下载 ZIP、收藏 |

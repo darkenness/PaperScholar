@@ -8,6 +8,8 @@ export interface ModelSelection {
   chatKeyId: number | null;
   imageModelName: string;
   imageKeyId: number | null;
+  imageSizeMode?: 'quality' | 'fixed';
+  imageSizeOptions?: string[];
 }
 
 interface ModelSelectorProps {
@@ -15,6 +17,19 @@ interface ModelSelectorProps {
   showImage?: boolean;
   onChange?: (selection: ModelSelection) => void;
 }
+
+const resolveImageCapabilities = (
+  models: AvailableModelsResponse | null,
+  modelName: string,
+  keyId: number | null,
+): Pick<ModelSelection, 'imageSizeMode' | 'imageSizeOptions'> => {
+  const group = models?.image_models.find(m => m.model_name === modelName);
+  const provider = keyId == null ? undefined : group?.providers.find(p => p.key_id === keyId);
+  return {
+    imageSizeMode: provider?.size_mode || group?.size_mode || 'quality',
+    imageSizeOptions: provider?.size_options || group?.size_options || [],
+  };
+};
 
 export default function ModelSelector({ showChat = true, showImage = true, onChange }: ModelSelectorProps) {
   const [models, setModels] = useState<AvailableModelsResponse | null>(null);
@@ -44,7 +59,13 @@ export default function ModelSelector({ showChat = true, showImage = true, onCha
         setChatKeyId(initChatKey);
         setImageModelName(initImage);
         setImageKeyId(initImageKey);
-        onChange?.({ chatModelName: initChat, chatKeyId: initChatKey, imageModelName: initImage, imageKeyId: initImageKey });
+        onChange?.({
+          chatModelName: initChat,
+          chatKeyId: initChatKey,
+          imageModelName: initImage,
+          imageKeyId: initImageKey,
+          ...resolveImageCapabilities(data, initImage, initImageKey),
+        });
       } catch {
         // User may not have keys configured yet
       } finally {
@@ -56,7 +77,10 @@ export default function ModelSelector({ showChat = true, showImage = true, onCha
   }, []);
 
   const notify = (patch: Partial<ModelSelection>) => {
-    const sel = { chatModelName, chatKeyId, imageModelName, imageKeyId, ...patch };
+    const sel: ModelSelection = { chatModelName, chatKeyId, imageModelName, imageKeyId, ...patch };
+    const capabilities = resolveImageCapabilities(models, sel.imageModelName, sel.imageKeyId);
+    sel.imageSizeMode = capabilities.imageSizeMode;
+    sel.imageSizeOptions = capabilities.imageSizeOptions;
     onChange?.(sel);
   };
 

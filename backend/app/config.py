@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "./uploads"
     MAX_UPLOAD_SIZE_MB: int = 20
 
+    # Registration
+    INVITE_CODE: str = ""
+    INVITE_CODE_MAX_USES: int = 10
+
     # Email
     SMTP_HOST: str = ""
     SMTP_PORT: int = 587

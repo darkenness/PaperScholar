@@ -1,13 +1,13 @@
-import random
-import string
-from datetime import datetime, timezone
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.core.database import get_db
 from app.core.security import create_access_token, hash_password, verify_password
+from app.models.invitation import InvitationCode
 from app.models.user import User
 from app.schemas.auth import (
     AuthResponse,
@@ -23,43 +23,53 @@ from app.api.deps import get_current_user
 
 router = APIRouter(prefix="/auth", tags=["认证"])
 
-# TODO [PRODUCTION]: Replace with Redis-backed store.
-# In-memory store does NOT work with multiple uvicorn workers (codes are per-process).
-# Also lost on server restart.
-_verification_codes: dict[str, dict] = {}
 
-
-def _generate_code() -> str:
-    return "".join(random.choices(string.digits, k=6))
+def _normalize_invite_code(code: str) -> str:
+    return code.strip()
 
 
 @router.post("/send-code", response_model=MessageResponse)
 async def send_verification_code(req: SendCodeRequest):
-    code = _generate_code()
-    _verification_codes[req.email] = {
-        "code": code,
-        "expires": datetime.now(timezone.utc).timestamp() + 300,  # 5 minutes
-    }
-    # TODO: Send email via SMTP in production
-    print(f"[DEV] Verification code for {req.email}: {code}")
-    return MessageResponse(message="验证码已发送")
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="当前已改为邀请码注册，无需邮箱验证码",
+    )
+
+
+async def _lock_invite_code(invite_code: str, db: AsyncSession) -> InvitationCode:
+    configured_code = _normalize_invite_code(settings.INVITE_CODE)
+    submitted_code = _normalize_invite_code(invite_code)
+
+    if not configured_code:
+        raise HTTPException(status_code=500, detail="服务器未配置邀请码")
+    if submitted_code != configured_code:
+        raise HTTPException(status_code=400, detail="邀请码错误")
+
+    await db.execute(
+        pg_insert(InvitationCode)
+        .values(
+            code=configured_code,
+            max_uses=settings.INVITE_CODE_MAX_USES,
+            used_count=0,
+        )
+        .on_conflict_do_nothing(index_elements=[InvitationCode.code])
+    )
+    result = await db.execute(
+        select(InvitationCode)
+        .where(InvitationCode.code == configured_code)
+        .with_for_update()
+    )
+    invite = result.scalar_one()
+    invite.max_uses = settings.INVITE_CODE_MAX_USES
+    if invite.used_count >= invite.max_uses:
+        raise HTTPException(status_code=400, detail="邀请码使用次数已达上限")
+
+    return invite
 
 
 @router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
 async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
-    # Verify code (skip in dev mode if no code provided)
-    from app.config import settings
-    if req.verification_code:
-        record = _verification_codes.get(req.email)
-        if not record:
-            raise HTTPException(status_code=400, detail="请先获取验证码")
-        if datetime.now(timezone.utc).timestamp() > record["expires"]:
-            _verification_codes.pop(req.email, None)
-            raise HTTPException(status_code=400, detail="验证码已过期，请重新获取")
-        if record["code"] != req.verification_code:
-            raise HTTPException(status_code=400, detail="验证码错误")
-    elif settings.APP_ENV != "development":
-        raise HTTPException(status_code=400, detail="请输入验证码")
+    invite = await _lock_invite_code(req.invite_code, db)
 
     # Check existing
     result = await db.execute(
@@ -78,10 +88,15 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
         password_hash=hash_password(req.password),
     )
     db.add(user)
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="用户名或邮箱已被使用")
+
+    invite.used_count += 1
     await db.commit()
     await db.refresh(user)
-
-    _verification_codes.pop(req.email, None)
 
     # First user becomes admin
     result = await db.execute(select(User).limit(2))

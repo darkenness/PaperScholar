@@ -142,7 +142,7 @@ paperscholar/
 │   │   ├── main.py                 # FastAPI入口
 │   │   ├── config.py               # 配置管理(pydantic-settings)
 │   │   ├── api/                    # API路由
-│   │   │   ├── auth.py             # 认证(注册/登录/验证码)
+│   │   │   ├── auth.py             # 认证(注册/登录/邀请码)
 │   │   │   ├── api_keys.py         # API Key管理 + 系统API申请
 │   │   │   ├── generate.py         # 图表生成 + SSE流 + 历史
 │   │   │   ├── edit.py             # 图表编辑(矢量化+SVG生成)

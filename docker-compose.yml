@@ -8,7 +8,7 @@ services:
       POSTGRES_USER: paperscholar
       POSTGRES_PASSWORD: paperscholar
     ports:
-      - "5432:5432"
+      - "5433:5432"  # 避免与 ai-empathy 项目冲突，使用 5433
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -22,7 +22,7 @@ services:
     container_name: paperscholar-redis
     restart: always
     ports:
-      - "6379:6379"
+      - "6380:6379"  # 避免与 ai-empathy 项目冲突，使用 6380
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -42,14 +42,18 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    env_file:
+      - ./backend/.env
     environment:
+      # Docker networking overrides (env_file values would use localhost otherwise)
       DATABASE_URL: postgresql+asyncpg://paperscholar:paperscholar@db:5432/paperscholar
       REDIS_URL: redis://redis:6379/0
     volumes:
       - uploads:/app/uploads
       - ./backend/app:/app/app
       - ./backend/data:/app/data
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      - ./backend/.env:/app/.env:ro
+    command: sh -c "chmod +x /app/entrypoint.sh && /app/entrypoint.sh"
 
   frontend:
     build:

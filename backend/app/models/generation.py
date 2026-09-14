@@ -22,6 +22,13 @@ class GenerationTask(Base):
     num_candidates: Mapped[int] = mapped_column(Integer, default=1)
     aspect_ratio: Mapped[str | None] = mapped_column(String(10), nullable=True)
     max_critic_rounds: Mapped[int] = mapped_column(Integer, default=3)
+    optimize_input: Mapped[bool] = mapped_column(Boolean, default=False)
+    vector_export: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    cost_budget_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cost_estimated_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cost_details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    parent_task_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    user_feedback: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     chat_provider: Mapped[str | None] = mapped_column(String(50), nullable=True)
     chat_model: Mapped[str | None] = mapped_column(String(200), nullable=True)
@@ -56,6 +63,7 @@ class GenerationResult(Base):
 
     image_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     svg_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    pdf_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     thumbnail_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)

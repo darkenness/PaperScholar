@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
-import { generateApi } from '@/lib/api';
+import { useState, useRef, useEffect, useMemo } from 'react';
+import { generateApi, editApi } from '@/lib/api';
 import ModelSelector, { type ModelSelection } from '@/components/ModelSelector';
 import ImageLightbox from '@/components/ImageLightbox';
 import EvolutionTimeline from '@/components/EvolutionTimeline';
@@ -33,6 +33,12 @@ const RETRIEVAL_SETTINGS = [
 
 const DIAGRAM_ASPECT_RATIOS = ['1:1', '16:9', '4:3', '3:2', '21:9'];
 
+const sizeToAspectRatio = (size: string) => {
+  if (size === '1536x1024') return '3:2';
+  if (size === '1024x1536') return '2:3';
+  return '1:1';
+};
+
 interface SSEEvent {
   type: string;
   data: any;
@@ -47,12 +53,23 @@ export default function GeneratePage() {
   const [retrievalSetting, setRetrievalSetting] = useState('auto');
   const [numCandidates, setNumCandidates] = useState(1);
   const [aspectRatio, setAspectRatio] = useState('16:9');
+  const [imageSize, setImageSize] = useState('');
   const [maxCriticRounds, setMaxCriticRounds] = useState(3);
   const [retrieverContentLimit, setRetrieverContentLimit] = useState<number | null>(null);
   const [retrieverTopK, setRetrieverTopK] = useState(10);
   const [retrieverPoolSize, setRetrieverPoolSize] = useState<number | null>(null);
+  const [optimizeInput, setOptimizeInput] = useState(false);
+  const [vectorExport, setVectorExport] = useState('none');
+  const [budgetUsd, setBudgetUsd] = useState('');
+  const [continueFeedback, setContinueFeedback] = useState('');
+  const [continuing, setContinuing] = useState(false);
 
   const [modelSel, setModelSel] = useState<ModelSelection>({ chatModelName: '', chatKeyId: null, imageModelName: '', imageKeyId: null });
+  const fixedImageSizes = useMemo(
+    () => modelSel.imageSizeMode === 'fixed' ? (modelSel.imageSizeOptions || []) : [],
+    [modelSel.imageSizeMode, modelSel.imageSizeOptions],
+  );
+  const usesFixedImageSize = taskType === 'diagram' && fixedImageSizes.length > 0;
 
   const [extracting, setExtracting] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -85,6 +102,18 @@ export default function GeneratePage() {
     })();
   }, [taskStatus, taskId]);
 
+  useEffect(() => {
+    if (!usesFixedImageSize) {
+      setImageSize('');
+      return;
+    }
+    setImageSize((current) => {
+      const next = fixedImageSizes.includes(current) ? current : fixedImageSizes[0];
+      setAspectRatio(sizeToAspectRatio(next));
+      return next;
+    });
+  }, [usesFixedImageSize, fixedImageSizes]);
+
   const handleExtractFromPaper = async (file: File) => {
     setExtracting(true);
     setError('');
@@ -95,21 +124,79 @@ export default function GeneratePage() {
     if (modelSel.chatKeyId) formData.append('chat_key_id', String(modelSel.chatKeyId));
 
     try {
-      const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
-      const res = await fetch(`${API_BASE}/api/v1/edit/extract-methodology`, {
-        method: 'POST', body: formData,
-        headers: { 'Authorization': `Bearer ${token}` },
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ detail: '提取失败' }));
-        throw new Error(err.detail || '提取失败');
-      }
-      const data = await res.json();
+      const data = await editApi.extractMethodology(formData);
       setContent(data.methodology);
     } catch (e: any) {
       setError(e.message || '论文方法论提取失败');
     }
     setExtracting(false);
+  };
+
+  const startTaskStream = (newTaskId: string) => {
+    const token = localStorage.getItem('token');
+    const evtSource = new EventSource(
+      `${generateApi.streamUrl(newTaskId)}?token=${encodeURIComponent(token || '')}`,
+    );
+    evtSourceRef.current = evtSource;
+
+    evtSource.addEventListener('stage', (e) => {
+      const data = JSON.parse(e.data);
+      const now = new Date().toLocaleTimeString();
+      setEvents((prev) => [...prev, { type: 'stage', data, time: now }]);
+      setCurrentStage(data.name || '');
+      if (data.progress) setProgress((prev) => Math.max(prev, data.progress));
+    });
+
+    evtSource.addEventListener('cost', (e) => {
+      const data = JSON.parse(e.data);
+      const now = new Date().toLocaleTimeString();
+      setEvents((prev) => [...prev, { type: 'cost', data, time: now }]);
+    });
+
+    evtSource.addEventListener('intermediate', (e) => {
+      const data = JSON.parse(e.data);
+      const now = new Date().toLocaleTimeString();
+      setEvents((prev) => [...prev, { type: 'intermediate', data, time: now }]);
+      if (data.type === 'image' && data.image_url) {
+        setPreviewImages((prev) => [...prev, data.image_url]);
+      }
+    });
+
+    evtSource.addEventListener('done', (e) => {
+      const data = JSON.parse(e.data);
+      setIsDone(true);
+      setProgress(1);
+      setCurrentStage('');
+      setLoading(false);
+      setContinuing(false);
+      evtSourceRef.current = null;
+      if (data.status === 'failed') {
+        setTaskStatus('failed');
+        setError(data.message || '生成失败，请检查 API 配置或稍后重试');
+      } else if (data.status === 'cancelled') {
+        setTaskStatus('cancelled');
+      } else {
+        setTaskStatus('completed');
+      }
+      evtSource.close();
+    });
+
+    evtSource.addEventListener('error', (e) => {
+      try {
+        const data = JSON.parse((e as MessageEvent).data);
+        const now = new Date().toLocaleTimeString();
+        setEvents((prev) => [...prev, { type: 'error', data, time: now }]);
+        setError(data.message || '生成过程中发生错误');
+        setTaskStatus('failed');
+      } catch {}
+    });
+
+    evtSource.onerror = () => {
+      setLoading(false);
+      setContinuing(false);
+      evtSourceRef.current = null;
+      evtSource.close();
+    };
   };
 
   const handleGenerate = async () => {
@@ -136,6 +223,7 @@ export default function GeneratePage() {
         retrieval_setting: retrievalSetting,
         num_candidates: numCandidates,
         aspect_ratio: taskType === 'diagram' ? aspectRatio : undefined,
+        image_size: taskType === 'diagram' && imageSize ? imageSize : undefined,
         max_critic_rounds: maxCriticRounds,
         retriever_content_limit: retrieverContentLimit,
         retriever_top_k: retrieverTopK,
@@ -144,68 +232,14 @@ export default function GeneratePage() {
         chat_key_id: modelSel.chatKeyId || undefined,
         image_model_name: modelSel.imageModelName || undefined,
         image_key_id: modelSel.imageKeyId || undefined,
+        optimize_input: optimizeInput,
+        vector_export: vectorExport,
+        budget_usd: budgetUsd ? Number(budgetUsd) : undefined,
       });
 
       setTaskId(res.task_id);
       setTaskStatus('running');
-
-      // Connect to SSE stream with token as query param (EventSource can't send headers)
-      const token = localStorage.getItem('token');
-      const evtSource = new EventSource(
-        `${generateApi.streamUrl(res.task_id)}?token=${encodeURIComponent(token || '')}`,
-      );
-      evtSourceRef.current = evtSource;
-
-      evtSource.addEventListener('stage', (e) => {
-        const data = JSON.parse(e.data);
-        const now = new Date().toLocaleTimeString();
-        setEvents((prev) => [...prev, { type: 'stage', data, time: now }]);
-        setCurrentStage(data.name || '');
-        if (data.progress) setProgress((prev) => Math.max(prev, data.progress));
-      });
-
-      evtSource.addEventListener('intermediate', (e) => {
-        const data = JSON.parse(e.data);
-        const now = new Date().toLocaleTimeString();
-        setEvents((prev) => [...prev, { type: 'intermediate', data, time: now }]);
-        if (data.type === 'image' && data.image_url) {
-          setPreviewImages((prev) => [...prev, data.image_url]);
-        }
-      });
-
-      evtSource.addEventListener('done', (e) => {
-        const data = JSON.parse(e.data);
-        setIsDone(true);
-        setProgress(1);
-        setCurrentStage('');
-        setLoading(false);
-        evtSourceRef.current = null;
-        if (data.status === 'failed') {
-          setTaskStatus('failed');
-          setError(data.message || '生成失败，请检查 API 配置或稍后重试');
-        } else if (data.status === 'cancelled') {
-          setTaskStatus('cancelled');
-        } else {
-          setTaskStatus('completed');
-        }
-        evtSource.close();
-      });
-
-      evtSource.addEventListener('error', (e) => {
-        try {
-          const data = JSON.parse((e as MessageEvent).data);
-          const now = new Date().toLocaleTimeString();
-          setEvents((prev) => [...prev, { type: 'error', data, time: now }]);
-          setError(data.message || '生成过程中发生错误');
-          setTaskStatus('failed');
-        } catch {}
-      });
-
-      evtSource.onerror = () => {
-        setLoading(false);
-        evtSourceRef.current = null;
-        evtSource.close();
-      };
+      startTaskStream(res.task_id);
     } catch (err: any) {
       setError(err.message || '创建任务失败');
       setLoading(false);
@@ -229,6 +263,43 @@ export default function GeneratePage() {
       setEvents((prev) => [...prev, { type: 'stage', data: { name: 'cancelled', status: '已取消' }, time: now }]);
     } catch (err: any) {
       setError(err.message || '取消失败');
+    }
+  };
+
+  const handleContinue = async () => {
+    if (!taskId || !finalResults?.results?.[activeCandidateIdx]) return;
+    if (!continueFeedback.trim()) {
+      setError('请输入二次修改反馈');
+      return;
+    }
+    setError('');
+    setContinuing(true);
+    setLoading(true);
+    setEvents([]);
+    setPreviewImages([]);
+    setIsDone(false);
+    setFinalResults(null);
+    setProgress(0);
+    setCurrentStage('');
+
+    try {
+      const activeResult = finalResults.results[activeCandidateIdx];
+      const res = await generateApi.continueTask(taskId, {
+        result_id: activeResult.id,
+        feedback: continueFeedback,
+        additional_critic_rounds: maxCriticRounds,
+        image_size: taskType === 'diagram' && imageSize ? imageSize : undefined,
+        vector_export: vectorExport,
+        budget_usd: budgetUsd ? Number(budgetUsd) : undefined,
+      });
+      setTaskId(res.task_id);
+      setTaskStatus('running');
+      setContinueFeedback('');
+      startTaskStream(res.task_id);
+    } catch (err: any) {
+      setError(err.message || '续跑任务创建失败');
+      setLoading(false);
+      setContinuing(false);
     }
   };
 
@@ -394,6 +465,12 @@ export default function GeneratePage() {
                       <h3 className="text-sm font-bold text-[var(--text-primary)]">
                         生成结果 ({finalResults.results.length} 张候选图)
                       </h3>
+                      {finalResults.cost_estimated_usd != null && (
+                        <span className="text-[10px] text-emerald-400 font-mono">
+                          估算 ${Number(finalResults.cost_estimated_usd).toFixed(4)}
+                          {finalResults.cost_budget_usd ? ` / $${Number(finalResults.cost_budget_usd).toFixed(2)}` : ''}
+                        </span>
+                      )}
                       {finalResults.completed_at && (
                         <span className="text-[10px] text-[var(--text-faint)] font-mono">
                           {new Date(finalResults.completed_at).toLocaleString()}
@@ -502,6 +579,11 @@ export default function GeneratePage() {
                               下载 SVG
                             </a>
                           )}
+                          {activeResult.pdf_url && (
+                            <a href={`${API_BASE}${activeResult.pdf_url}`} download className="btn-ghost text-xs py-1.5 px-3">
+                              下载 PDF
+                            </a>
+                          )}
                           {activeImageUrl && (
                             <a href={activeImageUrl} download className="btn-primary text-xs py-1.5 px-3">
                               下载图片
@@ -559,6 +641,24 @@ export default function GeneratePage() {
                               <EvolutionTimeline taskId={taskId} compact={true} />
                             </div>
                           )}
+
+                          <div className="tech-panel p-4">
+                            <h4 className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider mb-2">反馈续跑</h4>
+                            <textarea
+                              value={continueFeedback}
+                              onChange={(e) => setContinueFeedback(e.target.value)}
+                              placeholder="例如：让模块关系更清楚、减少装饰、突出训练/推理两条路径..."
+                              rows={4}
+                              className="w-full input-tech resize-none text-xs"
+                            />
+                            <button
+                              onClick={handleContinue}
+                              disabled={loading || continuing || !continueFeedback.trim()}
+                              className="w-full btn-primary text-xs py-2 mt-2 disabled:opacity-50"
+                            >
+                              {continuing ? '续跑中...' : '基于反馈再生成'}
+                            </button>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -697,6 +797,42 @@ export default function GeneratePage() {
                   </p>
                 </div>
 
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)] bg-[var(--bg-inset)] px-3 py-2">
+                    <input
+                      type="checkbox"
+                      checked={optimizeInput}
+                      onChange={(e) => setOptimizeInput(e.target.checked)}
+                    />
+                    输入优化
+                  </label>
+                  <div>
+                    <label className="text-[11px] text-[var(--text-muted)] mb-1 block">矢量导出</label>
+                    <select value={vectorExport} onChange={(e) => setVectorExport(e.target.value)} className="w-full input-tech text-sm py-2">
+                      <option value="none">不导出</option>
+                      <option value="svg">SVG</option>
+                      <option value="pdf">PDF</option>
+                      <option value="both">SVG + PDF</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[11px] text-[var(--text-muted)] mb-1 block">预算上限（美元，可选）</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={budgetUsd}
+                    onChange={(e) => setBudgetUsd(e.target.value)}
+                    placeholder="例如 0.50"
+                    className="w-full input-tech text-sm py-2"
+                  />
+                  <p className="text-[10px] text-[var(--text-faint)] mt-1">
+                    成本为估算值；统计图 SVG/PDF 是原生导出，示意图 SVG 为实验性生成。
+                  </p>
+                </div>
+
                 <div className={`grid gap-3 ${taskType === 'diagram' ? 'grid-cols-2' : 'grid-cols-1'}`}>
                   <div>
                     <label className="text-[11px] text-[var(--text-muted)] mb-1 block">参考图检索</label>
@@ -706,7 +842,25 @@ export default function GeneratePage() {
                       ))}
                     </select>
                   </div>
-                  {taskType === 'diagram' && (
+                  {taskType === 'diagram' && usesFixedImageSize && (
+                    <div>
+                      <label className="text-[11px] text-[var(--text-muted)] mb-1 block">输出尺寸</label>
+                      <select
+                        value={imageSize || fixedImageSizes[0] || ''}
+                        onChange={(e) => {
+                          const size = e.target.value;
+                          setImageSize(size);
+                          setAspectRatio(sizeToAspectRatio(size));
+                        }}
+                        className="w-full input-tech text-sm py-2"
+                      >
+                        {fixedImageSizes.map((size) => (
+                          <option key={size} value={size}>{size}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  {taskType === 'diagram' && !usesFixedImageSize && (
                     <div>
                       <label className="text-[11px] text-[var(--text-muted)] mb-1 block">宽高比</label>
                       <select value={aspectRatio} onChange={(e) => setAspectRatio(e.target.value)} className="w-full input-tech text-sm py-2">

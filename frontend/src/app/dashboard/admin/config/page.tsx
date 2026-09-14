@@ -3,6 +3,20 @@
 import { useEffect, useState } from 'react';
 import { adminApi } from '@/lib/api';
 
+const providerOptionsFor = (type: 'chat' | 'image') => (
+  type === 'image'
+    ? [
+        { value: 'openai_images', label: 'OpenAI Images (/images/generations)' },
+        { value: 'openai_compat', label: 'OpenAI 兼容' },
+        { value: 'gemini', label: 'Google Gemini' },
+      ]
+    : [
+        { value: 'openai_compat', label: 'OpenAI 兼容' },
+        { value: 'gemini', label: 'Google Gemini' },
+        { value: 'anthropic', label: 'Anthropic' },
+      ]
+);
+
 export default function AdminConfigPage() {
   const [configs, setConfigs] = useState<any[]>([]);
   const [announcements, setAnnouncements] = useState<any[]>([]);
@@ -144,7 +158,15 @@ export default function AdminConfigPage() {
       <div className="tech-panel p-5">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-bold text-[var(--text-primary)]">系统共享 API Key</h2>
-          <button onClick={() => setShowKeyForm(true)} className="btn-primary text-xs py-1.5 px-4">+ 添加</button>
+          <button
+            onClick={() => {
+              setShowKeyForm(true);
+              setKeyProvider(providerOptionsFor(keyModelType)[0].value);
+            }}
+            className="btn-primary text-xs py-1.5 px-4"
+          >
+            + 添加
+          </button>
         </div>
         <p className="text-xs text-[var(--text-muted)] mb-4">管理员配置的系统级 API Key，审核通过的用户在没有自己的 Key 时会自动使用这些</p>
 
@@ -189,7 +211,15 @@ export default function AdminConfigPage() {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="text-xs text-[var(--text-muted)] mb-1 block">模型类型</label>
-                <select value={keyModelType} onChange={(e) => setKeyModelType(e.target.value as any)} className="w-full input-tech text-sm py-2">
+                <select
+                  value={keyModelType}
+                  onChange={(e) => {
+                    const nextType = e.target.value as 'chat' | 'image';
+                    setKeyModelType(nextType);
+                    setKeyProvider(providerOptionsFor(nextType)[0].value);
+                  }}
+                  className="w-full input-tech text-sm py-2"
+                >
                   <option value="chat">Chat 模型</option>
                   <option value="image">Image 模型</option>
                 </select>
@@ -197,15 +227,20 @@ export default function AdminConfigPage() {
               <div>
                 <label className="text-xs text-[var(--text-muted)] mb-1 block">Provider</label>
                 <select value={keyProvider} onChange={(e) => setKeyProvider(e.target.value)} className="w-full input-tech text-sm py-2">
-                  <option value="openai_compat">OpenAI 兼容</option>
-                  <option value="gemini">Google Gemini</option>
-                  <option value="anthropic">Anthropic</option>
+                  {providerOptionsFor(keyModelType).map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
                 </select>
               </div>
             </div>
             <div>
               <label className="text-xs text-[var(--text-muted)] mb-1 block">Base URL (可选)</label>
-              <input value={keyBaseUrl} onChange={(e) => setKeyBaseUrl(e.target.value)} placeholder="https://openrouter.ai/api/v1" className="w-full input-tech text-sm" />
+              <input
+                value={keyBaseUrl}
+                onChange={(e) => setKeyBaseUrl(e.target.value)}
+                placeholder={keyProvider === 'openai_images' ? 'https://api.vectorengine.cn/v1' : 'https://openrouter.ai/api/v1'}
+                className="w-full input-tech text-sm"
+              />
             </div>
             <div>
               <label className="text-xs text-[var(--text-muted)] mb-1 block">API Key *</label>
@@ -213,7 +248,12 @@ export default function AdminConfigPage() {
             </div>
             <div>
               <label className="text-xs text-[var(--text-muted)] mb-1 block">模型名称 (可选)</label>
-              <input value={keyModelName} onChange={(e) => setKeyModelName(e.target.value)} placeholder="gemini-2.5-pro" className="w-full input-tech text-sm" />
+              <input
+                value={keyModelName}
+                onChange={(e) => setKeyModelName(e.target.value)}
+                placeholder={keyProvider === 'openai_images' ? 'gpt-image-2-all' : 'gemini-2.5-pro'}
+                className="w-full input-tech text-sm"
+              />
             </div>
             <div className="flex gap-3 pt-2">
               <button onClick={() => setShowKeyForm(false)} className="btn-ghost flex-1 py-2 text-sm">取消</button>
