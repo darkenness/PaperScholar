@@ -1,0 +1,20 @@
+name: Maintenance validation
+on:
+  push:
+    branches: [fix/provider-pipeline-20260914]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Export source for local audit
+        run: git archive --format=zip HEAD -o /tmp/paperscholar-source.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: paperscholar-source
+          path: /tmp/paperscholar-source.zip
+          retention-days: 3
