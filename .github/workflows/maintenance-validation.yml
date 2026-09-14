@@ -5,16 +5,33 @@ on:
 permissions:
   contents: read
 jobs:
-  snapshot:
+  dependencies:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Export source for local audit
-        run: git archive --format=zip HEAD -o /tmp/paperscholar-source.zip
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Download Python dependencies for offline regression tests
+        run: |
+          sed 's/google-genai==1.5.0/google-genai==1.52.0/' backend/requirements.txt > /tmp/requirements.txt
+          python -m pip download --only-binary=:all: -r /tmp/requirements.txt 'matplotlib==3.10.7' 'numpy==2.2.6' 'pytest==8.3.5' 'pytest-asyncio==0.26.0' 'respx==0.22.0' 'aiosqlite==0.21.0' 'asgi-lifespan==2.1.0' -d /tmp/wheels
+      - name: Prepare frontend dependencies and lockfile
+        working-directory: frontend
+        run: |
+          npm ci --ignore-scripts
+          npm install --save-exact next@14.2.35
+          npm install --save-dev --save-exact @playwright/test@1.55.1
+          tar -czf /tmp/frontend-deps.tar.gz node_modules package.json package-lock.json
       - uses: actions/upload-artifact@v4
         with:
-          name: paperscholar-source
-          path: /tmp/paperscholar-source.zip
+          name: regression-dependencies
+          path: |
+            /tmp/wheels
+            /tmp/frontend-deps.tar.gz
           retention-days: 3
