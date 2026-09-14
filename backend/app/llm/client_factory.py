@@ -20,11 +20,12 @@ class LLMClientFactory:
         from app.llm.endpoint_config import normalize_base_url
         base_url = normalize_base_url(base_url, provider)
         if provider == "openai_compat":
+            api_options = kwargs.get("api_options") or {}
             return OpenAICompatClient(
                 api_key=api_key,
                 base_url=base_url or "https://openrouter.ai/api/v1",
                 model=model,
-                image_api_mode="chat",
+                image_api_mode=api_options.get("image_api_mode", "chat"),
                 **kwargs,
             )
         elif provider == "openai_images":

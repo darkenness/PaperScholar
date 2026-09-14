@@ -123,6 +123,10 @@ export const generateApi = {
     request<{ task_id: string; status: string; stream_url: string }>(`${API_V1}/generate/${taskId}/continue`, {
       method: 'POST',
       body: JSON.stringify(data),
+      }),
+  retryTask: (taskId: string) =>
+    request<{ task_id: string; status: string; stream_url: string }>(`${API_V1}/generate/${taskId}/retry`, {
+      method: 'POST',
     }),
   deleteTask: (taskId: string) =>
     request<any>(`${API_V1}/generate/${taskId}`, { method: 'DELETE' }),

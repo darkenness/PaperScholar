@@ -180,6 +180,50 @@ async def continue_generation_task(
     )
 
 
+@router.post("/{task_id}/retry", response_model=TaskCreateResponse, status_code=status.HTTP_201_CREATED)
+async def retry_generation_task(
+    task_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Retry a failed/cancelled run with the original request parameters."""
+    parent = await db.scalar(select(GenerationTask).where(
+        GenerationTask.id == task_id,
+        GenerationTask.user_id == user.id,
+        GenerationTask.status.in_(["failed", "cancelled"]),
+    ))
+    if not parent:
+        raise HTTPException(status_code=404, detail="找不到可重试的失败任务")
+    params = dict(parent.request_params or {})
+    task = GenerationTask(
+        request_params=params,
+        user_id=user.id,
+        task_type=parent.task_type,
+        content=parent.content,
+        visual_intent=parent.visual_intent,
+        pipeline_mode=parent.pipeline_mode,
+        retrieval_setting=parent.retrieval_setting,
+        num_candidates=parent.num_candidates,
+        aspect_ratio=parent.aspect_ratio,
+        max_critic_rounds=parent.max_critic_rounds,
+        optimize_input=parent.optimize_input,
+        vector_export=parent.vector_export,
+        cost_budget_usd=parent.cost_budget_usd,
+        chat_model=parent.chat_model,
+        chat_key_id=parent.chat_key_id,
+        image_model=parent.image_model,
+        image_key_id=parent.image_key_id,
+        parent_task_id=parent.id,
+        status="pending",
+    )
+    db.add(task)
+    await db.commit()
+    await db.refresh(task)
+    from app.services.generation_service import run_generation_task
+    launch_task(task.id, run_generation_task(task.id))
+    return TaskCreateResponse(task_id=task.id, status=task.status, stream_url=f"/api/v1/generate/{task.id}/stream")
+
+
 @router.get("/{task_id}/stream")
 async def stream_task_events(
     task_id: uuid.UUID,

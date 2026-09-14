@@ -4,6 +4,7 @@ import pytest
 
 from app.schemas.api_key import ApiKeyCreate, ApiKeyUpdate
 from app.services.provider_service import probe_config, update_config_fields
+from app.llm.client_factory import LLMClientFactory
 
 
 def make_config(**overrides):
@@ -50,6 +51,18 @@ def test_openai_compat_update_rejects_empty_model_name():
         update_config_fields(cfg, ApiKeyUpdate(model_name="   "))
 
     assert cfg.model_name == "old-model"
+
+
+def test_openai_compat_image_mode_comes_from_api_options():
+    client = LLMClientFactory.create(
+        "openai_compat",
+        "secret",
+        base_url="http://relay/v1",
+        model="gpt-image-2.5",
+        api_options={"image_api_mode": "images"},
+    )
+
+    assert client.image_api_mode == "images"
 
 
 @pytest.mark.asyncio
